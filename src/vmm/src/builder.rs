@@ -226,6 +226,17 @@ pub fn build_microvm_for_boot(
     #[allow(unused_mut)]
     let mut boot_cmdline = boot_config.cmdline.clone();
 
+    // Add CPU hotplug parameters only if explicitly enabled via machine config
+    if vm_resources.machine_config.cpu_hotplug_enabled {
+        let max_supported_vcpus = crate::vmm_config::machine_config::get_max_supported_vcpus();
+        let cpu_hotplug_params = crate::vmm_config::boot_source::get_cpu_hotplug_cmdline_params();
+        if let Err(e) = boot_cmdline.insert_str(&cpu_hotplug_params) {
+            log::warn!("Failed to add CPU hotplug parameters to kernel cmdline: {}", e);
+        } else {
+            log::info!("CPU hotplug enabled - added kernel parameters: {} (host has {} CPUs)", cpu_hotplug_params, max_supported_vcpus);
+        }
+    }
+
     let cpu_template = vm_resources
         .machine_config
         .cpu_template

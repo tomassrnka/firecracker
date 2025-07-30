@@ -18,6 +18,21 @@ use serde::{Deserialize, Serialize};
 pub const DEFAULT_KERNEL_CMDLINE: &str =
     "reboot=k panic=1 pci=off nomodule 8250.nr_uarts=0 i8042.noaux i8042.nomux i8042.dumbkbd";
 
+/// Generate CPU hotplug kernel parameters based on host CPU count.
+/// - `maxcpus=N` sets the maximum number of CPUs that can be brought online
+/// - `nr_cpus=N` tells kernel to allocate structures for this many CPUs
+/// - `possible_cpus=N` defines the possible CPU range
+pub fn get_cpu_hotplug_cmdline_params() -> String {
+    let max_cpus = super::machine_config::get_max_supported_vcpus();
+    format!("maxcpus={} nr_cpus={} possible_cpus={}", max_cpus, max_cpus, max_cpus)
+}
+
+/// CPU hotplug kernel parameters that should be added to enable CPU hotplug support.
+/// - `maxcpus=32` sets the maximum number of CPUs that can be brought online
+/// - `nr_cpus=32` tells kernel to allocate structures for this many CPUs
+/// - `possible_cpus=32` defines the possible CPU range
+pub const CPU_HOTPLUG_CMDLINE_PARAMS: &str = "maxcpus=32 nr_cpus=32 possible_cpus=32"; // Kept for backward compatibility
+
 /// Strongly typed data structure used to configure the boot source of the
 /// microvm.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]

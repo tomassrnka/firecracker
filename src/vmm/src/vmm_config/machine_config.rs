@@ -8,9 +8,26 @@ use crate::cpu_config::templates::{CpuTemplateType, CustomCpuTemplate, StaticCpu
 
 /// The default memory size of the VM, in MiB.
 pub const DEFAULT_MEM_SIZE_MIB: usize = 128;
+
+/// Get the maximum number of vCPUs supported, based on host CPU count
+pub fn get_max_supported_vcpus() -> u8 {
+    // Try to get the host CPU count
+    match std::thread::available_parallelism() {
+        Ok(count) => {
+            let host_cpus = count.get();
+            // Cap at u8::MAX (255) which is the practical limit for our u8 cpu_id type
+            std::cmp::min(host_cpus, u8::MAX as usize) as u8
+        }
+        Err(_) => {
+            // Fallback to conservative default if we can't determine host CPU count
+            8
+        }
+    }
+}
+
 /// Firecracker aims to support small scale workloads only, so limit the maximum
-/// vCPUs supported.
-pub const MAX_SUPPORTED_VCPUS: u8 = 32;
+/// vCPUs supported. This is now dynamic based on host CPU count.
+pub const MAX_SUPPORTED_VCPUS: u8 = 32; // Keep for backward compatibility in error messages
 
 /// Errors associated with configuring the microVM.
 #[rustfmt::skip]
@@ -115,6 +132,10 @@ pub struct MachineConfig {
     /// Configures what page size Firecracker should use to back guest memory.
     #[serde(default)]
     pub huge_pages: HugePageConfig,
+    /// Enables CPU hotplug functionality. When enabled, kernel parameters for CPU hotplug
+    /// are automatically added and ACPI tables are configured for dynamic CPU scaling.
+    #[serde(default)]
+    pub cpu_hotplug_enabled: bool,
     /// GDB socket address.
     #[cfg(feature = "gdb")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -157,6 +178,7 @@ impl Default for MachineConfig {
             cpu_template: None,
             track_dirty_pages: false,
             huge_pages: HugePageConfig::None,
+            cpu_hotplug_enabled: false,
             #[cfg(feature = "gdb")]
             gdb_socket_path: None,
         }
@@ -190,6 +212,10 @@ pub struct MachineConfigUpdate {
     /// Configures what page size Firecracker should use to back guest memory.
     #[serde(default)]
     pub huge_pages: Option<HugePageConfig>,
+    /// Enables CPU hotplug functionality. When enabled, kernel parameters for CPU hotplug
+    /// are automatically added and ACPI tables are configured for dynamic CPU scaling.
+    #[serde(default)]
+    pub cpu_hotplug_enabled: Option<bool>,
     /// GDB socket address.
     #[cfg(feature = "gdb")]
     #[serde(default)]
@@ -214,6 +240,7 @@ impl From<MachineConfig> for MachineConfigUpdate {
             cpu_template: cfg.static_template(),
             track_dirty_pages: Some(cfg.track_dirty_pages),
             huge_pages: Some(cfg.huge_pages),
+            cpu_hotplug_enabled: Some(cfg.cpu_hotplug_enabled),
             #[cfg(feature = "gdb")]
             gdb_socket_path: cfg.gdb_socket_path,
         }
@@ -251,7 +278,8 @@ impl MachineConfig {
             return Err(MachineConfigError::SmtNotSupported);
         }
 
-        if vcpu_count == 0 || vcpu_count > MAX_SUPPORTED_VCPUS {
+        let max_vcpus = get_max_supported_vcpus();
+        if vcpu_count == 0 || vcpu_count > max_vcpus {
             return Err(MachineConfigError::InvalidVcpuCount);
         }
 
@@ -281,6 +309,7 @@ impl MachineConfig {
             cpu_template,
             track_dirty_pages: update.track_dirty_pages.unwrap_or(self.track_dirty_pages),
             huge_pages: page_config,
+            cpu_hotplug_enabled: update.cpu_hotplug_enabled.unwrap_or(self.cpu_hotplug_enabled),
             #[cfg(feature = "gdb")]
             gdb_socket_path: update.gdb_socket_path.clone(),
         })

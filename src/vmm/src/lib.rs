@@ -77,6 +77,8 @@ pub mod acpi;
 pub mod builder;
 /// Types for guest configuration.
 pub mod cpu_config;
+/// CPU hotplug functionality.
+pub mod cpu_hotplug;
 pub(crate) mod device_manager;
 /// Emulates virtual and hardware devices.
 #[allow(missing_docs)]

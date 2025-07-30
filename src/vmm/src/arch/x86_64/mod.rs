@@ -232,6 +232,7 @@ pub fn configure_system_for_boot(
         &vmm.mmio_device_manager,
         &vmm.acpi_device_manager,
         vcpus,
+        machine_config.cpu_hotplug_enabled,
     )?;
     Ok(())
 }

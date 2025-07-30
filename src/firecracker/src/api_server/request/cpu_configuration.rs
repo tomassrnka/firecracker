@@ -4,6 +4,7 @@
 use vmm::cpu_config::templates::CustomCpuTemplate;
 use vmm::logger::{IncMetric, METRICS};
 use vmm::rpc_interface::VmmAction;
+use vmm::vmm_config::cpu_hotplug::CpuHotplugConfig;
 
 use super::super::parsed_request::{ParsedRequest, RequestError};
 use super::Body;
@@ -14,6 +15,22 @@ pub(crate) fn parse_put_cpu_config(body: &Body) -> Result<ParsedRequest, Request
     // Convert the API request into a a deserialized/binary format
     Ok(ParsedRequest::new_sync(VmmAction::PutCpuConfiguration(
         CustomCpuTemplate::try_from(body.raw()).map_err(|err| {
+            METRICS.put_api_requests.cpu_cfg_fails.inc();
+            RequestError::SerdeJson(err)
+        })?,
+    )))
+}
+
+pub(crate) fn parse_get_cpu_hotplug_status() -> Result<ParsedRequest, RequestError> {
+    METRICS.get_api_requests.instance_info_count.inc();
+    Ok(ParsedRequest::new_sync(VmmAction::GetCpuHotplugStatus))
+}
+
+pub(crate) fn parse_put_cpu_hotplug(body: &Body) -> Result<ParsedRequest, RequestError> {
+    METRICS.put_api_requests.cpu_cfg_count.inc();
+    
+    Ok(ParsedRequest::new_sync(VmmAction::ConfigureCpuHotplug(
+        serde_json::from_slice::<CpuHotplugConfig>(body.raw()).map_err(|err| {
             METRICS.put_api_requests.cpu_cfg_fails.inc();
             RequestError::SerdeJson(err)
         })?,

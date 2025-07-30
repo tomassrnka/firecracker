@@ -24,6 +24,7 @@ use crate::vmm_config::balloon::{
     BalloonUpdateStatsConfig,
 };
 use crate::vmm_config::boot_source::{BootSourceConfig, BootSourceConfigError};
+use crate::vmm_config::cpu_hotplug::{CpuHotplugConfig, CpuHotplugError, CpuHotplugStatus};
 use crate::vmm_config::drive::{BlockDeviceConfig, BlockDeviceUpdateConfig, DriveError};
 use crate::vmm_config::entropy::{EntropyDeviceConfig, EntropyDeviceError};
 use crate::vmm_config::instance_info::InstanceInfo;
@@ -121,6 +122,10 @@ pub enum VmmAction {
     /// Update the microVM configuration (memory & vcpu) using `VmUpdateConfig` as input. This
     /// action can only be called before the microVM has booted.
     UpdateMachineConfiguration(MachineConfigUpdate),
+    /// Get the current CPU hotplug status.
+    GetCpuHotplugStatus,
+    /// Configure CPU hotplug operations (add or remove CPUs).
+    ConfigureCpuHotplug(CpuHotplugConfig),
 }
 
 /// Wrapper for all errors associated with VMM actions.
@@ -134,6 +139,8 @@ pub enum VmmActionError {
     CreateSnapshot(#[from] CreateSnapshotError),
     /// Configure CPU error: {0}
     ConfigureCpu(#[from] GuestConfigError),
+    /// CPU hotplug error: {0}
+    CpuHotplug(#[from] CpuHotplugError),
     /// Drive config error: {0}
     DriveConfig(#[from] DriveError),
     /// Entropy device error: {0}
@@ -191,6 +198,8 @@ pub enum VmmData {
     InstanceInformation(InstanceInfo),
     /// The microVM version.
     VmmVersion(String),
+    /// The CPU hotplug status.
+    CpuHotplugStatus(CpuHotplugStatus),
 }
 
 /// Trait used for deduplicating the MMDS request handling across the two ApiControllers.
@@ -449,7 +458,9 @@ impl<'a> PrebootApiController<'a> {
             | UpdateBalloon(_)
             | UpdateBalloonStatistics(_)
             | UpdateBlockDevice(_)
-            | UpdateNetworkInterface(_) => Err(VmmActionError::OperationNotSupportedPreBoot),
+            | UpdateNetworkInterface(_)
+            | GetCpuHotplugStatus
+            | ConfigureCpuHotplug(_) => Err(VmmActionError::OperationNotSupportedPreBoot),
             #[cfg(target_arch = "x86_64")]
             SendCtrlAltDel => Err(VmmActionError::OperationNotSupportedPreBoot),
         }
@@ -673,6 +684,16 @@ impl RuntimeApiController {
                 .map_err(|err| VmmActionError::BalloonConfig(BalloonConfigError::from(err))),
             UpdateBlockDevice(new_cfg) => self.update_block_device(new_cfg),
             UpdateNetworkInterface(netif_update) => self.update_net_rate_limiters(netif_update),
+            GetCpuHotplugStatus => Ok(VmmData::CpuHotplugStatus(
+                self.vmm.lock().expect("Poisoned lock").get_cpu_hotplug_status()
+            )),
+            ConfigureCpuHotplug(config) => self
+                .vmm
+                .lock()
+                .expect("Poisoned lock")
+                .configure_cpu_hotplug(config)
+                .map(|_| VmmData::Empty)
+                .map_err(VmmActionError::CpuHotplug),
 
             // Operations not allowed post-boot.
             ConfigureBootSource(_)

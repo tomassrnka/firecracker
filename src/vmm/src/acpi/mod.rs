@@ -8,7 +8,8 @@ use vm_allocator::AllocPolicy;
 
 use crate::Vcpu;
 use crate::acpi::x86_64::{
-    apic_addr, rsdp_addr, setup_arch_dsdt, setup_arch_fadt, setup_interrupt_controllers,
+    apic_addr, rsdp_addr, setup_arch_dsdt, setup_arch_fadt,
+    setup_interrupt_controllers, setup_interrupt_controllers_for_hotplug,
 };
 use crate::device_manager::acpi::ACPIDeviceManager;
 use crate::device_manager::mmio::MMIODeviceManager;
@@ -81,6 +82,7 @@ impl AcpiTableWriter<'_> {
         &mut self,
         mmio_device_manager: &MMIODeviceManager,
         acpi_device_manager: &ACPIDeviceManager,
+        cpu_hotplug_enabled: bool,
     ) -> Result<u64, AcpiError> {
         let mut dsdt_data = Vec::new();
 
@@ -91,7 +93,7 @@ impl AcpiTableWriter<'_> {
         acpi_device_manager.append_aml_bytes(&mut dsdt_data)?;
 
         // Architecture specific DSDT data
-        setup_arch_dsdt(&mut dsdt_data)?;
+        setup_arch_dsdt(&mut dsdt_data, cpu_hotplug_enabled)?;
 
         let mut dsdt = Dsdt::new(OEM_ID, *b"FCVMDSDT", OEM_REVISION, dsdt_data);
         self.write_acpi_table(&mut dsdt)
@@ -113,14 +115,23 @@ impl AcpiTableWriter<'_> {
 
     /// Build the MADT table for the guest
     ///
-    /// This includes information about the interrupt controllers supported in the platform
-    fn build_madt(&mut self, nr_vcpus: u8) -> Result<u64, AcpiError> {
+    /// This includes information about the interrupt controllers supported in the platform.
+    /// If CPU hotplug is enabled, we create entries for all possible CPUs (up to host limit)
+    /// and mark only the initially present ones as enabled.
+    /// If CPU hotplug is disabled, we only create entries for the initially present CPUs.
+    fn build_madt(&mut self, nr_vcpus: u8, cpu_hotplug_enabled: bool) -> Result<u64, AcpiError> {
+        let interrupt_controllers = if cpu_hotplug_enabled {
+            setup_interrupt_controllers_for_hotplug(nr_vcpus)
+        } else {
+            setup_interrupt_controllers(nr_vcpus)
+        };
+        
         let mut madt = Madt::new(
             OEM_ID,
             *b"FCVMMADT",
             OEM_REVISION,
             apic_addr(),
-            setup_interrupt_controllers(nr_vcpus),
+            interrupt_controllers,
         );
         self.write_acpi_table(&mut madt)
     }
@@ -167,15 +178,16 @@ pub(crate) fn create_acpi_tables(
     mmio_device_manager: &MMIODeviceManager,
     acpi_device_manager: &ACPIDeviceManager,
     vcpus: &[Vcpu],
+    cpu_hotplug_enabled: bool,
 ) -> Result<(), AcpiError> {
     let mut writer = AcpiTableWriter {
         mem,
         resource_allocator,
     };
 
-    let dsdt_addr = writer.build_dsdt(mmio_device_manager, acpi_device_manager)?;
+    let dsdt_addr = writer.build_dsdt(mmio_device_manager, acpi_device_manager, cpu_hotplug_enabled)?;
     let fadt_addr = writer.build_fadt(dsdt_addr)?;
-    let madt_addr = writer.build_madt(vcpus.len().try_into().unwrap())?;
+    let madt_addr = writer.build_madt(vcpus.len().try_into().unwrap(), cpu_hotplug_enabled)?;
     let xsdt_addr = writer.build_xsdt(fadt_addr, madt_addr)?;
     writer.build_rsdp(xsdt_addr)
 }

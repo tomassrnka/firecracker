@@ -13,7 +13,7 @@ use super::ApiServer;
 use super::request::actions::parse_put_actions;
 use super::request::balloon::{parse_get_balloon, parse_patch_balloon, parse_put_balloon};
 use super::request::boot_source::parse_put_boot_source;
-use super::request::cpu_configuration::parse_put_cpu_config;
+use super::request::cpu_configuration::{parse_get_cpu_hotplug_status, parse_put_cpu_config, parse_put_cpu_hotplug};
 use super::request::drive::{parse_patch_drive, parse_put_drive};
 use super::request::entropy::parse_put_entropy;
 use super::request::instance_info::parse_get_instance_info;
@@ -82,12 +82,20 @@ impl TryFrom<&Request> for ParsedRequest {
                 Ok(ParsedRequest::new_sync(VmmAction::GetFullVmConfig))
             }
             (Method::Get, "machine-config", None) => parse_get_machine_config(),
+            (Method::Get, "cpu-config", None) => parse_get_cpu_hotplug_status(),
             (Method::Get, "mmds", None) => parse_get_mmds(),
             (Method::Get, _, Some(_)) => method_to_error(Method::Get),
             (Method::Put, "actions", Some(body)) => parse_put_actions(body),
             (Method::Put, "balloon", Some(body)) => parse_put_balloon(body),
             (Method::Put, "boot-source", Some(body)) => parse_put_boot_source(body),
-            (Method::Put, "cpu-config", Some(body)) => parse_put_cpu_config(body),
+            (Method::Put, "cpu-config", Some(body)) => {
+                let next_token = path_tokens.next();
+                if next_token == Some("hotplug") {
+                    parse_put_cpu_hotplug(body)
+                } else {
+                    parse_put_cpu_config(body)
+                }
+            }
             (Method::Put, "drives", Some(body)) => parse_put_drive(body, path_tokens.next()),
             (Method::Put, "logger", Some(body)) => parse_put_logger(body),
             (Method::Put, "machine-config", Some(body)) => parse_put_machine_config(body),
@@ -176,6 +184,7 @@ impl ParsedRequest {
                     &serde_json::json!({ "firecracker_version": version.as_str() }),
                 ),
                 VmmData::FullVmConfig(config) => Self::success_response_with_data(config),
+                VmmData::CpuHotplugStatus(status) => Self::success_response_with_data(status),
             },
             Err(vmm_action_error) => {
                 let mut response = match vmm_action_error {

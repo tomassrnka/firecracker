@@ -37,6 +37,22 @@ impl LocalAPIC {
             flags: U32::new(1u32 << MADT_CPU_ENABLE_FLAG),
         }
     }
+
+    /// Create a new LocalAPIC with custom enable flag
+    pub fn new_with_flags(cpu_id: u8, enabled: bool) -> Self {
+        let flags = if enabled {
+            1u32 << MADT_CPU_ENABLE_FLAG
+        } else {
+            0u32
+        };
+        Self {
+            r#type: 0,
+            length: 8,
+            processor_uid: cpu_id,
+            apic_id: cpu_id,
+            flags: U32::new(flags),
+        }
+    }
 }
 
 // clippy doesn't understand that we actually "use" the fields of this struct when we serialize

@@ -126,6 +126,8 @@ class Api:
         self.mmds = Resource(self, "/mmds")
         self.mmds_config = Resource(self, "/mmds/config")
         self.balloon = Resource(self, "/balloon")
+        self.cpu_config = Resource(self, "/cpu-config")
+        self.cpu_config_hotplug = Resource(self, "/cpu-config/hotplug")
         self.balloon_stats = Resource(self, "/balloon/statistics")
         self.vsock = Resource(self, "/vsock")
         self.snapshot_create = Resource(self, "/snapshot/create")

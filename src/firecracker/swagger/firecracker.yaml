@@ -378,6 +378,55 @@ paths:
           schema:
             $ref: "#/definitions/Error"
 
+  /cpu-config:
+    get:
+      summary: Gets the current CPU configuration and hotplug state. Post-boot only.
+      description: 
+        Gets the current CPU configuration, including online/offline CPUs and maximum supported CPUs.
+        This endpoint is only available after the microVM has started.
+      operationId: getCpuConfiguration
+      responses:
+        200:
+          description: The current CPU hotplug status
+          schema:
+            $ref: "#/definitions/CpuHotplugStatus"
+        400:
+          description: CPU configuration cannot be retrieved due to bad input
+          schema:
+            $ref: "#/definitions/Error"
+        default:
+          description: Internal server error
+          schema:
+            $ref: "#/definitions/Error"
+
+  /cpu-config/hotplug:
+    put:
+      summary: Hotplug or unplug CPUs. Post-boot only.
+      description:
+        Hotplug or unplug CPUs by specifying the target vCPU count.
+        This operation can only be called after the microVM has started.
+        The target count must be between 1 and the maximum supported CPUs (32).
+        CPU 0 (boot CPU) cannot be removed.
+      operationId: putCpuHotplug
+      parameters:
+        - name: body
+          in: body
+          description: CPU hotplug configuration
+          required: true
+          schema:
+            $ref: "#/definitions/CpuHotplugConfig"
+      responses:
+        204:
+          description: CPU hotplug operation completed successfully
+        400:
+          description: CPU hotplug cannot be performed due to bad input
+          schema:
+            $ref: "#/definitions/Error"
+        default:
+          description: Internal server error
+          schema:
+            $ref: "#/definitions/Error"
+
   /metrics:
     put:
       summary: Initializes the metrics system by specifying a named pipe or a file for the metrics output.
@@ -1063,6 +1112,42 @@ definitions:
           - None
           - 2M
         description: Which huge pages configuration (if any) should be used to back guest memory.
+
+  CpuHotplugConfig:
+    type: object
+    description:
+      Configuration for CPU hotplug operations. Specifies the target number of vCPUs for the running VM.
+    required:
+      - target_vcpu_count
+    properties:
+      target_vcpu_count:
+        type: integer
+        minimum: 1
+        maximum: 32
+        description: Target number of vCPUs for the running VM
+
+  CpuHotplugStatus:
+    type: object
+    description:
+      Current CPU hotplug status, including online/offline CPU information.
+    required:
+      - online_cpus
+      - offline_cpus
+      - max_cpus
+    properties:
+      online_cpus:
+        type: array
+        description: List of currently online CPU IDs
+        items:
+          type: integer
+      offline_cpus:
+        type: array
+        description: List of currently offline CPU IDs
+        items:
+          type: integer
+      max_cpus:
+        type: integer
+        description: Maximum number of CPUs supported
 
   MemoryBackend:
     type: object
