@@ -372,6 +372,9 @@ fn detect_host_xsave_mask(kvm: &kvm_ioctls::Kvm) -> Result<u64, XcrCommandError>
             Err(e) if e.errno() == libc::ENOMEM && num_entries < MAX_ENTRIES => {
                 num_entries = (num_entries * 2).min(MAX_ENTRIES);
             }
+            Err(e) if e.errno() == libc::ENOMEM => {
+                return Ok(0x3);
+            }
             Err(e) => return Err(XcrCommandError::DetectCpuid(e)),
         }
     }
@@ -379,9 +382,13 @@ fn detect_host_xsave_mask(kvm: &kvm_ioctls::Kvm) -> Result<u64, XcrCommandError>
 
 #[cfg(target_arch = "x86_64")]
 fn detect_host_msrs(kvm: &kvm_ioctls::Kvm) -> Result<HashSet<u32>, XcrCommandError> {
-    let list = kvm
-        .get_msr_index_list()
-        .map_err(XcrCommandError::DetectMsrList)?;
+    let list = match kvm.get_msr_index_list() {
+        Ok(list) => list,
+        Err(e) if e.errno() == libc::ENOMEM => {
+            return Ok(KVM_PARAVIRT_MSRS.iter().copied().collect());
+        }
+        Err(e) => return Err(XcrCommandError::DetectMsrList(e)),
+    };
     let mut allowed: HashSet<u32> = list.as_slice().iter().copied().collect();
     for msr in KVM_PARAVIRT_MSRS {
         allowed.insert(*msr);
