@@ -1370,6 +1370,7 @@ dependencies = [
  "clap",
  "clap-num",
  "displaydoc",
+ "kvm-bindings 0.11.1",
  "kvm-ioctls 0.19.1",
  "libc",
  "log-instrument",

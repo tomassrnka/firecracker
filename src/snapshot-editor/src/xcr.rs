@@ -19,6 +19,8 @@ pub enum XcrSubCommand {
     ClearMpx(ClearMpxArgs),
     /// Print the saved MSR indices for each vCPU.
     ListMsrs(ListMsrsArgs),
+    /// Remove specific MSR entries from the saved vCPU state.
+    RemoveMsrs(RemoveMsrsArgs),
 }
 
 #[derive(Debug, Args)]
@@ -38,6 +40,19 @@ pub struct ListMsrsArgs {
     pub vmstate_path: PathBuf,
 }
 
+#[derive(Debug, Args)]
+pub struct RemoveMsrsArgs {
+    /// Path to the vmstate file to update.
+    #[arg(long)]
+    pub vmstate_path: PathBuf,
+    /// Optional output path; defaults to overwriting the input file.
+    #[arg(long)]
+    pub output_path: Option<PathBuf>,
+    /// MSR indices (decimal or 0x-prefixed hex) to remove.
+    #[arg(long, value_parser = parse_msr, num_args = 1.., value_delimiter = ',')]
+    pub msr: Vec<u32>,
+}
+
 const MPX_FEATURE_MASK: u64 = (1 << 3) | (1 << 4);
 const XSTATE_BV_OFFSET: usize = 512;
 const XCOMP_BV_OFFSET: usize = 520;
@@ -51,6 +66,7 @@ pub fn xcr_command(command: XcrSubCommand) -> Result<(), XcrCommandError> {
     match command {
         XcrSubCommand::ClearMpx(args) => clear_mpx(args),
         XcrSubCommand::ListMsrs(args) => list_msrs(args),
+        XcrSubCommand::RemoveMsrs(args) => remove_msrs(args),
     }
 }
 
@@ -64,6 +80,40 @@ fn clear_mpx(args: ClearMpxArgs) -> Result<(), XcrCommandError> {
     for vcpu in &mut microvm_state.vcpu_states {
         clear_mpx_for_vcpu(vcpu);
     }
+    save_vmstate(microvm_state, &output_path, version)?;
+    Ok(())
+}
+
+fn remove_msrs(args: RemoveMsrsArgs) -> Result<(), XcrCommandError> {
+    use vmm_sys_util::fam::FamStruct;
+
+    let output_path = args
+        .output_path
+        .clone()
+        .unwrap_or(args.vmstate_path.clone());
+    let targets: std::collections::HashSet<u32> = args.msr.iter().copied().collect();
+
+    let (mut microvm_state, version) = open_vmstate(&args.vmstate_path)?;
+    for vcpu in &mut microvm_state.vcpu_states {
+        for msr_chunk in &mut vcpu.saved_msrs {
+            let entries = msr_chunk.as_mut_slice();
+            let mut write_idx = 0;
+            for idx in 0..entries.len() {
+                if !targets.contains(&entries[idx].index) {
+                    if write_idx != idx {
+                        entries[write_idx] = entries[idx];
+                    }
+                    write_idx += 1;
+                }
+            }
+            unsafe {
+                msr_chunk.as_mut_fam_struct().nmsrs = write_idx as u32;
+            }
+        }
+        vcpu.saved_msrs
+            .retain(|chunk| chunk.as_fam_struct_ref().nmsrs != 0);
+    }
+
     save_vmstate(microvm_state, &output_path, version)?;
     Ok(())
 }
@@ -231,5 +281,16 @@ mod tests {
         );
 
         assert!(vcpu.saved_msrs.is_empty());
+    }
+}
+
+fn parse_msr(value: &str) -> Result<u32, String> {
+    let trimmed = value.trim();
+    if let Some(rest) = trimmed.strip_prefix("0x") {
+        u32::from_str_radix(rest, 16).map_err(|e| e.to_string())
+    } else if let Some(rest) = trimmed.strip_prefix("0X") {
+        u32::from_str_radix(rest, 16).map_err(|e| e.to_string())
+    } else {
+        trimmed.parse::<u32>().map_err(|e| e.to_string())
     }
 }
