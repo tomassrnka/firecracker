@@ -17,6 +17,8 @@ pub enum XcrCommandError {
 pub enum XcrSubCommand {
     /// Remove MPX support from the saved extended register state.
     ClearMpx(ClearMpxArgs),
+    /// Print the saved MSR indices for each vCPU.
+    ListMsrs(ListMsrsArgs),
 }
 
 #[derive(Debug, Args)]
@@ -27,6 +29,13 @@ pub struct ClearMpxArgs {
     /// Optional output path; defaults to overwriting the input file.
     #[arg(long)]
     pub output_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct ListMsrsArgs {
+    /// Path to the vmstate file to inspect.
+    #[arg(long)]
+    pub vmstate_path: PathBuf,
 }
 
 const MPX_FEATURE_MASK: u64 = (1 << 3) | (1 << 4);
@@ -41,6 +50,7 @@ const IA32_BNDCFGS_MSR: u32 = 0x0000_0D90;
 pub fn xcr_command(command: XcrSubCommand) -> Result<(), XcrCommandError> {
     match command {
         XcrSubCommand::ClearMpx(args) => clear_mpx(args),
+        XcrSubCommand::ListMsrs(args) => list_msrs(args),
     }
 }
 
@@ -55,6 +65,29 @@ fn clear_mpx(args: ClearMpxArgs) -> Result<(), XcrCommandError> {
         clear_mpx_for_vcpu(vcpu);
     }
     save_vmstate(microvm_state, &output_path, version)?;
+    Ok(())
+}
+
+fn list_msrs(args: ListMsrsArgs) -> Result<(), XcrCommandError> {
+    use vmm_sys_util::fam::FamStruct;
+
+    let (microvm_state, _) = open_vmstate(&args.vmstate_path)?;
+
+    for (idx, vcpu) in microvm_state.vcpu_states.iter().enumerate() {
+        let mut indices = Vec::new();
+        for chunk in &vcpu.saved_msrs {
+            indices.extend(chunk.as_slice().iter().map(|entry| entry.index));
+        }
+        indices.sort_unstable();
+        indices.dedup();
+        println!("vCPU {idx}: {} MSR entries", indices.len());
+        if !indices.is_empty() {
+            for entry in indices.iter() {
+                println!("  0x{entry:08x}");
+            }
+        }
+    }
+
     Ok(())
 }
 
