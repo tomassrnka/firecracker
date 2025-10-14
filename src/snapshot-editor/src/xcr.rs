@@ -1,7 +1,7 @@
 // Copyright 2024 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::{convert::TryInto, path::PathBuf};
+use std::{collections::HashSet, convert::TryInto, path::PathBuf};
 
 use clap::{Args, Subcommand};
 
@@ -21,6 +21,8 @@ pub enum XcrSubCommand {
     ListMsrs(ListMsrsArgs),
     /// Remove specific MSR entries from the saved vCPU state.
     RemoveMsrs(RemoveMsrsArgs),
+    /// Restrict XSAVE components to the provided mask.
+    ClearXsave(ClearXsaveArgs),
 }
 
 #[derive(Debug, Args)]
@@ -53,6 +55,19 @@ pub struct RemoveMsrsArgs {
     pub msr: Vec<u32>,
 }
 
+#[derive(Debug, Args)]
+pub struct ClearXsaveArgs {
+    /// Path to the vmstate file to update.
+    #[arg(long)]
+    pub vmstate_path: PathBuf,
+    /// Optional output path; defaults to overwriting the input file.
+    #[arg(long)]
+    pub output_path: Option<PathBuf>,
+    /// Bitmask of XSAVE components to retain (defaults to x87|SSE).
+    #[arg(long, value_parser = parse_mask)]
+    pub keep_mask: Option<u64>,
+}
+
 const MPX_FEATURE_MASK: u64 = (1 << 3) | (1 << 4);
 const XSTATE_BV_OFFSET: usize = 512;
 const XCOMP_BV_OFFSET: usize = 520;
@@ -67,6 +82,7 @@ pub fn xcr_command(command: XcrSubCommand) -> Result<(), XcrCommandError> {
         XcrSubCommand::ClearMpx(args) => clear_mpx(args),
         XcrSubCommand::ListMsrs(args) => list_msrs(args),
         XcrSubCommand::RemoveMsrs(args) => remove_msrs(args),
+        XcrSubCommand::ClearXsave(args) => clear_xsave(args),
     }
 }
 
@@ -91,7 +107,7 @@ fn remove_msrs(args: RemoveMsrsArgs) -> Result<(), XcrCommandError> {
         .output_path
         .clone()
         .unwrap_or(args.vmstate_path.clone());
-    let targets: std::collections::HashSet<u32> = args.msr.iter().copied().collect();
+    let targets: HashSet<u32> = args.msr.iter().copied().collect();
 
     let (mut microvm_state, version) = open_vmstate(&args.vmstate_path)?;
     for vcpu in &mut microvm_state.vcpu_states {
@@ -141,6 +157,21 @@ fn list_msrs(args: ListMsrsArgs) -> Result<(), XcrCommandError> {
     Ok(())
 }
 
+fn clear_xsave(args: ClearXsaveArgs) -> Result<(), XcrCommandError> {
+    let output_path = args
+        .output_path
+        .clone()
+        .unwrap_or(args.vmstate_path.clone());
+    let keep_mask = args.keep_mask.unwrap_or(0x3);
+
+    let (mut microvm_state, version) = open_vmstate(&args.vmstate_path)?;
+    for vcpu in &mut microvm_state.vcpu_states {
+        restrict_xsave_for_vcpu(vcpu, keep_mask);
+    }
+    save_vmstate(microvm_state, &output_path, version)?;
+    Ok(())
+}
+
 fn clear_mpx_for_vcpu(vcpu: &mut vmm::arch::x86_64::vcpu::VcpuState) {
     use vmm_sys_util::fam::FamStruct;
 
@@ -159,12 +190,12 @@ fn clear_mpx_for_vcpu(vcpu: &mut vmm::arch::x86_64::vcpu::VcpuState) {
         )
     };
 
-    clear_header_bits(region_bytes);
+    mask_header_bits(region_bytes, !MPX_FEATURE_MASK);
     zero_mpx_payload(region_bytes);
     clear_mpx_msrs(vcpu);
 }
 
-fn clear_header_bits(region_bytes: &mut [u8]) {
+fn mask_header_bits(region_bytes: &mut [u8], mask: u64) {
     if region_bytes.len() < XCOMP_BV_OFFSET + 8 {
         return;
     }
@@ -174,7 +205,7 @@ fn clear_header_bits(region_bytes: &mut [u8]) {
             .try_into()
             .unwrap(),
     );
-    xstate_bv &= !MPX_FEATURE_MASK;
+    xstate_bv &= mask;
     region_bytes[XSTATE_BV_OFFSET..XSTATE_BV_OFFSET + 8].copy_from_slice(&xstate_bv.to_le_bytes());
 
     let mut xcomp_bv = u64::from_le_bytes(
@@ -182,7 +213,7 @@ fn clear_header_bits(region_bytes: &mut [u8]) {
             .try_into()
             .unwrap(),
     );
-    xcomp_bv &= !MPX_FEATURE_MASK;
+    xcomp_bv &= mask;
     region_bytes[XCOMP_BV_OFFSET..XCOMP_BV_OFFSET + 8].copy_from_slice(&xcomp_bv.to_le_bytes());
 }
 
@@ -217,6 +248,35 @@ fn clear_mpx_msrs(vcpu: &mut vmm::arch::x86_64::vcpu::VcpuState) {
 
     vcpu.saved_msrs
         .retain(|chunk| chunk.as_fam_struct_ref().nmsrs != 0);
+}
+
+fn restrict_xsave_for_vcpu(vcpu: &mut vmm::arch::x86_64::vcpu::VcpuState, keep_mask: u64) {
+    use vmm_sys_util::fam::FamStruct;
+
+    for xcr in vcpu.xcrs.xcrs.iter_mut().take(vcpu.xcrs.nr_xcrs as usize) {
+        if xcr.xcr == 0 {
+            xcr.value &= keep_mask;
+        }
+    }
+
+    let xsave = unsafe { vcpu.xsave.as_mut_fam_struct() };
+    let region_u32 = &mut xsave.xsave.region;
+    let region_bytes = unsafe {
+        std::slice::from_raw_parts_mut(
+            region_u32.as_mut_ptr() as *mut u8,
+            region_u32.len() * std::mem::size_of::<u32>(),
+        )
+    };
+
+    mask_header_bits(region_bytes, keep_mask);
+    zero_extended_xsave(region_bytes);
+}
+
+fn zero_extended_xsave(region_bytes: &mut [u8]) {
+    const LEGACY_AREA: usize = 512;
+    if region_bytes.len() > LEGACY_AREA {
+        region_bytes[LEGACY_AREA..].fill(0);
+    }
 }
 
 #[cfg(test)]
@@ -282,6 +342,27 @@ mod tests {
 
         assert!(vcpu.saved_msrs.is_empty());
     }
+
+    #[test]
+    fn test_restrict_xsave_for_vcpu() {
+        let mut vcpu = VcpuState::default();
+        vcpu.xcrs.nr_xcrs = 1;
+        vcpu.xcrs.xcrs[0].xcr = 0;
+        vcpu.xcrs.xcrs[0].value = 0xff;
+
+        {
+            let mut xsave = vcpu.xsave.as_mut_fam_struct();
+            xsave.xsave.region[XSTATE_BV_OFFSET / 4] = 0xff;
+            xsave.xsave.region[XCOMP_BV_OFFSET / 4] = 0xff;
+        }
+
+        restrict_xsave_for_vcpu(&mut vcpu, 0x3);
+
+        assert_eq!(vcpu.xcrs.xcrs[0].value, 0x3);
+        let xsave = vcpu.xsave.as_fam_struct_ref();
+        assert_eq!(xsave.xsave.region[XSTATE_BV_OFFSET / 4] & !0x3, 0);
+        assert_eq!(xsave.xsave.region[XCOMP_BV_OFFSET / 4] & !0x3, 0);
+    }
 }
 
 fn parse_msr(value: &str) -> Result<u32, String> {
@@ -292,5 +373,16 @@ fn parse_msr(value: &str) -> Result<u32, String> {
         u32::from_str_radix(rest, 16).map_err(|e| e.to_string())
     } else {
         trimmed.parse::<u32>().map_err(|e| e.to_string())
+    }
+}
+
+fn parse_mask(value: &str) -> Result<u64, String> {
+    let trimmed = value.trim();
+    if let Some(rest) = trimmed.strip_prefix("0x") {
+        u64::from_str_radix(rest, 16).map_err(|e| e.to_string())
+    } else if let Some(rest) = trimmed.strip_prefix("0X") {
+        u64::from_str_radix(rest, 16).map_err(|e| e.to_string())
+    } else {
+        trimmed.parse::<u64>().map_err(|e| e.to_string())
     }
 }
