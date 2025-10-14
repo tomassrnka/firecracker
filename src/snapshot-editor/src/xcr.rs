@@ -5,7 +5,7 @@ use std::{collections::HashSet, convert::TryInto, path::PathBuf};
 
 use clap::{Args, Subcommand};
 #[cfg(target_arch = "x86_64")]
-use kvm_bindings::{CpuId, KVM_MAX_CPUID_ENTRIES};
+use kvm_bindings::KVM_MAX_CPUID_ENTRIES;
 #[cfg(target_arch = "x86_64")]
 use libc;
 
@@ -352,27 +352,23 @@ fn zero_extended_xsave(region_bytes: &mut [u8]) {
 
 #[cfg(target_arch = "x86_64")]
 fn detect_host_xsave_mask(kvm: &kvm_ioctls::Kvm) -> Result<u64, XcrCommandError> {
-    let cpuid = fetch_supported_cpuid(kvm)?;
-    let mut mask = 0u64;
-    for entry in cpuid.as_slice().iter() {
-        if entry.function == 0xD && entry.index == 0 {
-            mask = ((entry.edx as u64) << 32) | entry.eax as u64;
-            break;
-        }
-    }
-    if mask == 0 {
-        mask = 0x3; // x87 | SSE
-    }
-    Ok(mask)
-}
-
-#[cfg(target_arch = "x86_64")]
-fn fetch_supported_cpuid(kvm: &kvm_ioctls::Kvm) -> Result<CpuId, XcrCommandError> {
     let mut num_entries = KVM_MAX_CPUID_ENTRIES as usize;
     const MAX_ENTRIES: usize = 4096;
     loop {
         match kvm.get_supported_cpuid(num_entries) {
-            Ok(cpuid) => return Ok(cpuid),
+            Ok(cpuid) => {
+                let mut mask = 0u64;
+                for entry in cpuid.as_slice().iter() {
+                    if entry.function == 0xD && entry.index == 0 {
+                        mask = ((entry.edx as u64) << 32) | entry.eax as u64;
+                        break;
+                    }
+                }
+                if mask == 0 {
+                    mask = 0x3; // x87 | SSE
+                }
+                return Ok(mask);
+            }
             Err(e) if e.errno() == libc::ENOMEM && num_entries < MAX_ENTRIES => {
                 num_entries = (num_entries * 2).min(MAX_ENTRIES);
             }
