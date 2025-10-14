@@ -382,16 +382,16 @@ fn detect_host_xsave_mask(kvm: &kvm_ioctls::Kvm) -> Result<u64, XcrCommandError>
 
 #[cfg(target_arch = "x86_64")]
 fn detect_host_msrs(kvm: &kvm_ioctls::Kvm) -> Result<HashSet<u32>, XcrCommandError> {
-    let list = match kvm.get_msr_index_list() {
-        Ok(list) => list,
-        Err(e) if e.errno() == libc::ENOMEM => {
-            return Ok(KVM_PARAVIRT_MSRS.iter().copied().collect());
-        }
+    let mut allowed: HashSet<u32> = match kvm.get_msr_index_list() {
+        Ok(list) => list.as_slice().iter().copied().collect(),
+        Err(e) if e.errno() == libc::ENOMEM => HashSet::new(),
         Err(e) => return Err(XcrCommandError::DetectMsrList(e)),
     };
-    let mut allowed: HashSet<u32> = list.as_slice().iter().copied().collect();
     for msr in KVM_PARAVIRT_MSRS {
         allowed.insert(*msr);
+    }
+    for msr in AMD_SPECIFIC_MSRS {
+        allowed.remove(msr);
     }
     Ok(allowed)
 }
@@ -428,6 +428,17 @@ const KVM_PARAVIRT_MSRS: &[u32] = &[
     0x4b56_4d04,
     0x4b56_4d05,
     0x4b56_4d06,
+];
+
+#[cfg(target_arch = "x86_64")]
+const AMD_SPECIFIC_MSRS: &[u32] = &[
+    0xC000_0081,
+    0xC000_0082,
+    0xC000_0083,
+    0xC000_0084,
+    0xC000_0102,
+    0xC000_0103,
+    0xC001_0015,
 ];
 
 #[cfg(test)]
