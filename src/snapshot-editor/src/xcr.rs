@@ -11,6 +11,17 @@ use crate::utils::{UtilsError, open_vmstate, save_vmstate};
 pub enum XcrCommandError {
     /// {0}
     Utils(#[from] UtilsError),
+    /// This command is not supported on the current architecture.
+    UnsupportedArchitecture,
+    #[cfg(target_arch = "x86_64")]
+    /// Failed to open /dev/kvm: {0}
+    DetectOpenKvm(std::io::Error),
+    #[cfg(target_arch = "x86_64")]
+    /// Failed to query supported CPUID: {0}
+    DetectCpuid(#[source] kvm_ioctls::Error),
+    #[cfg(target_arch = "x86_64")]
+    /// Failed to query supported MSRs: {0}
+    DetectMsrList(#[source] kvm_ioctls::Error),
 }
 
 #[derive(Debug, Subcommand)]
@@ -23,6 +34,8 @@ pub enum XcrSubCommand {
     RemoveMsrs(RemoveMsrsArgs),
     /// Restrict XSAVE components to the provided mask.
     ClearXsave(ClearXsaveArgs),
+    /// Reconcile snapshot CPU state with the host capabilities.
+    Reconcile(ReconcileArgs),
 }
 
 #[derive(Debug, Args)]
@@ -68,6 +81,19 @@ pub struct ClearXsaveArgs {
     pub keep_mask: Option<u64>,
 }
 
+#[derive(Debug, Args)]
+pub struct ReconcileArgs {
+    /// Path to the vmstate file to update.
+    #[arg(long)]
+    pub vmstate_path: PathBuf,
+    /// Optional output path; defaults to overwriting the input file.
+    #[arg(long)]
+    pub output_path: Option<PathBuf>,
+    /// Optional cap on the XSAVE mask to retain (defaults to host capabilities).
+    #[arg(long, value_parser = parse_mask)]
+    pub keep_mask: Option<u64>,
+}
+
 const MPX_FEATURE_MASK: u64 = (1 << 3) | (1 << 4);
 const XSTATE_BV_OFFSET: usize = 512;
 const XCOMP_BV_OFFSET: usize = 520;
@@ -83,6 +109,7 @@ pub fn xcr_command(command: XcrSubCommand) -> Result<(), XcrCommandError> {
         XcrSubCommand::ListMsrs(args) => list_msrs(args),
         XcrSubCommand::RemoveMsrs(args) => remove_msrs(args),
         XcrSubCommand::ClearXsave(args) => clear_xsave(args),
+        XcrSubCommand::Reconcile(args) => reconcile(args),
     }
 }
 
@@ -166,10 +193,44 @@ fn clear_xsave(args: ClearXsaveArgs) -> Result<(), XcrCommandError> {
 
     let (mut microvm_state, version) = open_vmstate(&args.vmstate_path)?;
     for vcpu in &mut microvm_state.vcpu_states {
-        restrict_xsave_for_vcpu(vcpu, keep_mask);
+        restrict_xsave_for_vcpu(vcpu, keep_mask, true);
     }
     save_vmstate(microvm_state, &output_path, version)?;
     Ok(())
+}
+
+fn reconcile(args: ReconcileArgs) -> Result<(), XcrCommandError> {
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let _ = args;
+        return Err(XcrCommandError::UnsupportedArchitecture);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        use kvm_ioctls::Kvm;
+
+        let output_path = args
+            .output_path
+            .clone()
+            .unwrap_or(args.vmstate_path.clone());
+
+        let kvm = Kvm::new().map_err(XcrCommandError::DetectOpenKvm)?;
+        let host_xsave_mask = detect_host_xsave_mask(&kvm)?;
+        let host_msrs = detect_host_msrs(&kvm)?;
+        let keep_mask = args
+            .keep_mask
+            .map(|mask| mask & host_xsave_mask)
+            .unwrap_or(host_xsave_mask);
+
+        let (mut microvm_state, version) = open_vmstate(&args.vmstate_path)?;
+        for vcpu in &mut microvm_state.vcpu_states {
+            restrict_xsave_for_vcpu(vcpu, keep_mask, false);
+            retain_msrs_in_set(vcpu, &host_msrs);
+        }
+        save_vmstate(microvm_state, &output_path, version)?;
+        Ok(())
+    }
 }
 
 fn clear_mpx_for_vcpu(vcpu: &mut vmm::arch::x86_64::vcpu::VcpuState) {
@@ -250,7 +311,11 @@ fn clear_mpx_msrs(vcpu: &mut vmm::arch::x86_64::vcpu::VcpuState) {
         .retain(|chunk| chunk.as_fam_struct_ref().nmsrs != 0);
 }
 
-fn restrict_xsave_for_vcpu(vcpu: &mut vmm::arch::x86_64::vcpu::VcpuState, keep_mask: u64) {
+fn restrict_xsave_for_vcpu(
+    vcpu: &mut vmm::arch::x86_64::vcpu::VcpuState,
+    keep_mask: u64,
+    zero_removed: bool,
+) {
     use vmm_sys_util::fam::FamStruct;
 
     for xcr in vcpu.xcrs.xcrs.iter_mut().take(vcpu.xcrs.nr_xcrs as usize) {
@@ -269,7 +334,9 @@ fn restrict_xsave_for_vcpu(vcpu: &mut vmm::arch::x86_64::vcpu::VcpuState, keep_m
     };
 
     mask_header_bits(region_bytes, keep_mask);
-    zero_extended_xsave(region_bytes);
+    if zero_removed {
+        zero_extended_xsave(region_bytes);
+    }
 }
 
 fn zero_extended_xsave(region_bytes: &mut [u8]) {
@@ -278,6 +345,72 @@ fn zero_extended_xsave(region_bytes: &mut [u8]) {
         region_bytes[LEGACY_AREA..].fill(0);
     }
 }
+
+#[cfg(target_arch = "x86_64")]
+fn detect_host_xsave_mask(kvm: &kvm_ioctls::Kvm) -> Result<u64, XcrCommandError> {
+    use kvm_bindings::KVM_MAX_CPUID_ENTRIES;
+
+    let mut cpuid = kvm
+        .get_supported_cpuid(KVM_MAX_CPUID_ENTRIES)
+        .map_err(XcrCommandError::DetectCpuid)?;
+    let mut mask = 0u64;
+    for entry in cpuid.as_mut_slice().iter() {
+        if entry.function == 0xD && entry.index == 0 {
+            mask = ((entry.edx as u64) << 32) | entry.eax as u64;
+            break;
+        }
+    }
+    if mask == 0 {
+        mask = 0x3; // x87 | SSE
+    }
+    Ok(mask)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn detect_host_msrs(kvm: &kvm_ioctls::Kvm) -> Result<HashSet<u32>, XcrCommandError> {
+    let list = kvm
+        .get_msr_index_list()
+        .map_err(XcrCommandError::DetectMsrList)?;
+    let mut allowed: HashSet<u32> = list.as_slice().iter().copied().collect();
+    for msr in KVM_PARAVIRT_MSRS {
+        allowed.insert(*msr);
+    }
+    Ok(allowed)
+}
+
+fn retain_msrs_in_set(vcpu: &mut vmm::arch::x86_64::vcpu::VcpuState, allowed: &HashSet<u32>) {
+    use vmm_sys_util::fam::FamStruct;
+
+    for msr_chunk in &mut vcpu.saved_msrs {
+        let entries = msr_chunk.as_mut_slice();
+        let mut write_idx = 0;
+        for idx in 0..entries.len() {
+            if allowed.contains(&entries[idx].index) {
+                if write_idx != idx {
+                    entries[write_idx] = entries[idx];
+                }
+                write_idx += 1;
+            }
+        }
+        unsafe {
+            msr_chunk.as_mut_fam_struct().nmsrs = write_idx as u32;
+        }
+    }
+
+    vcpu.saved_msrs
+        .retain(|chunk| chunk.as_fam_struct_ref().nmsrs != 0);
+}
+
+#[cfg(target_arch = "x86_64")]
+const KVM_PARAVIRT_MSRS: &[u32] = &[
+    0x4b56_4d00,
+    0x4b56_4d01,
+    0x4b56_4d02,
+    0x4b56_4d03,
+    0x4b56_4d04,
+    0x4b56_4d05,
+    0x4b56_4d06,
+];
 
 #[cfg(test)]
 mod tests {
@@ -356,7 +489,7 @@ mod tests {
             xsave.xsave.region[XCOMP_BV_OFFSET / 4] = 0xff;
         }
 
-        restrict_xsave_for_vcpu(&mut vcpu, 0x3);
+        restrict_xsave_for_vcpu(&mut vcpu, 0x3, true);
 
         assert_eq!(vcpu.xcrs.xcrs[0].value, 0x3);
         let xsave = vcpu.xsave.as_fam_struct_ref();
