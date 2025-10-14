@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use clap::{Args, Subcommand};
 
-use crate::utils::{open_vmstate, save_vmstate, UtilsError};
+use crate::utils::{UtilsError, open_vmstate, save_vmstate};
 
 #[derive(Debug, thiserror::Error, displaydoc::Display)]
 pub enum TscCommandError {
@@ -74,7 +74,10 @@ fn set_tsc(args: SetTscArgs) -> Result<(), TscCommandError> {
     #[cfg(not(target_arch = "x86_64"))]
     let freq = args.tsc_khz.ok_or(TscCommandError::MissingFrequency)?;
 
-    let output_path = args.output_path.clone().unwrap_or(args.vmstate_path.clone());
+    let output_path = args
+        .output_path
+        .clone()
+        .unwrap_or(args.vmstate_path.clone());
 
     let (mut microvm_state, version) = open_vmstate(&args.vmstate_path)?;
     for vcpu in &mut microvm_state.vcpu_states {
@@ -93,12 +96,14 @@ fn detect_host_tsc_khz() -> Result<u32, TscCommandError> {
     let vcpu = vm
         .create_vcpu(0)
         .map_err(TscCommandError::DetectCreateVcpu)?;
-    vcpu.get_tsc_khz()
-        .map_err(TscCommandError::DetectQueryTsc)
+    vcpu.get_tsc_khz().map_err(TscCommandError::DetectQueryTsc)
 }
 
 fn clear_tsc(args: ClearTscArgs) -> Result<(), TscCommandError> {
-    let output_path = args.output_path.clone().unwrap_or(args.vmstate_path.clone());
+    let output_path = args
+        .output_path
+        .clone()
+        .unwrap_or(args.vmstate_path.clone());
 
     let (mut microvm_state, version) = open_vmstate(&args.vmstate_path)?;
     for vcpu in &mut microvm_state.vcpu_states {

@@ -851,6 +851,15 @@ dependencies = [
 
 [[package]]
 name = "kvm-bindings"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fa4933174d0cc4b77b958578cd45784071cc5ae212c2d78fbd755aaaa6dfa71a"
+dependencies = [
+ "vmm-sys-util",
+]
+
+[[package]]
+name = "kvm-bindings"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3b13baf7bdfda2e10bcb109fcb099ef40cff82374eb6b7cdcf4695bdec4e522c"
@@ -862,12 +871,24 @@ dependencies = [
 
 [[package]]
 name = "kvm-ioctls"
+version = "0.19.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e013ae7fcd2c6a8f384104d16afe7ea02969301ea2bb2a56e44b011ebc907cab"
+dependencies = [
+ "bitflags 2.9.0",
+ "kvm-bindings 0.10.0",
+ "libc",
+ "vmm-sys-util",
+]
+
+[[package]]
+name = "kvm-ioctls"
 version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "083c460d5a272c2f22205973e319147b791d92a288d7d7a8d4c6194f95229440"
 dependencies = [
  "bitflags 2.9.0",
- "kvm-bindings",
+ "kvm-bindings 0.11.1",
  "libc",
  "vmm-sys-util",
 ]
@@ -1349,7 +1370,7 @@ dependencies = [
  "clap",
  "clap-num",
  "displaydoc",
- "kvm-ioctls",
+ "kvm-ioctls 0.19.1",
  "libc",
  "log-instrument",
  "semver",
@@ -1662,8 +1683,8 @@ dependencies = [
  "gdbstub",
  "gdbstub_arch",
  "itertools 0.14.0",
- "kvm-bindings",
- "kvm-ioctls",
+ "kvm-bindings 0.11.1",
+ "kvm-ioctls 0.21.0",
  "libc",
  "linux-loader",
  "log",

@@ -9,12 +9,14 @@ mod edit_vmstate;
 mod info;
 mod tsc;
 mod utils;
+mod xcr;
 
-use edit_memory::{edit_memory_command, EditMemoryError, EditMemorySubCommand};
+use edit_memory::{EditMemoryError, EditMemorySubCommand, edit_memory_command};
 #[cfg(target_arch = "aarch64")]
-use edit_vmstate::{edit_vmstate_command, EditVmStateError, EditVmStateSubCommand};
-use info::{info_vmstate_command, InfoVmStateError, InfoVmStateSubCommand};
-use tsc::{tsc_command, TscCommandError, TscSubCommand};
+use edit_vmstate::{EditVmStateError, EditVmStateSubCommand, edit_vmstate_command};
+use info::{InfoVmStateError, InfoVmStateSubCommand, info_vmstate_command};
+use tsc::{TscCommandError, TscSubCommand, tsc_command};
+use xcr::{XcrCommandError, XcrSubCommand, xcr_command};
 
 #[derive(Debug, thiserror::Error, displaydoc::Display)]
 enum SnapEditorError {
@@ -27,6 +29,8 @@ enum SnapEditorError {
     InfoVmState(#[from] InfoVmStateError),
     /// Error during updating TSC metadata: {0}
     EditTsc(#[from] TscCommandError),
+    /// Error during updating XCR metadata: {0}
+    EditXcr(#[from] XcrCommandError),
 }
 
 #[derive(Debug, Parser)]
@@ -47,6 +51,8 @@ enum Command {
     InfoVmstate(InfoVmStateSubCommand),
     #[command(subcommand)]
     Tsc(TscSubCommand),
+    #[command(subcommand)]
+    Xcr(XcrSubCommand),
 }
 
 fn main_exec() -> Result<(), SnapEditorError> {
@@ -58,6 +64,7 @@ fn main_exec() -> Result<(), SnapEditorError> {
         Command::EditVmstate(command) => edit_vmstate_command(command)?,
         Command::InfoVmstate(command) => info_vmstate_command(command)?,
         Command::Tsc(command) => tsc_command(command)?,
+        Command::Xcr(command) => xcr_command(command)?,
     }
 
     Ok(())
