@@ -5,6 +5,8 @@ use std::{collections::HashSet, convert::TryInto, path::PathBuf};
 
 use clap::{Args, Subcommand};
 #[cfg(target_arch = "x86_64")]
+use kvm_bindings::{CpuId, KVM_MAX_CPUID_ENTRIES};
+#[cfg(target_arch = "x86_64")]
 use libc;
 
 use crate::utils::{UtilsError, open_vmstate, save_vmstate};
@@ -365,8 +367,8 @@ fn detect_host_xsave_mask(kvm: &kvm_ioctls::Kvm) -> Result<u64, XcrCommandError>
 }
 
 #[cfg(target_arch = "x86_64")]
-fn fetch_supported_cpuid(kvm: &kvm_ioctls::Kvm) -> Result<kvm_ioctls::CpuId, XcrCommandError> {
-    let mut num_entries = kvm_ioctls::KVM_MAX_CPUID_ENTRIES as usize;
+fn fetch_supported_cpuid(kvm: &kvm_ioctls::Kvm) -> Result<CpuId, XcrCommandError> {
+    let mut num_entries = KVM_MAX_CPUID_ENTRIES as usize;
     const MAX_ENTRIES: usize = 4096;
     loop {
         match kvm.get_supported_cpuid(num_entries) {
