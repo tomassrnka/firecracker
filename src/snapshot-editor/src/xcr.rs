@@ -36,6 +36,7 @@ const BNDREGS_OFFSET: usize = 832;
 const BNDREGS_SIZE: usize = 256;
 const BNDCSR_OFFSET: usize = 1088;
 const BNDCSR_SIZE: usize = 64;
+const IA32_BNDCFGS_MSR: u32 = 0x0000_0D90;
 
 pub fn xcr_command(command: XcrSubCommand) -> Result<(), XcrCommandError> {
     match command {
@@ -66,7 +67,7 @@ fn clear_mpx_for_vcpu(vcpu: &mut vmm::arch::x86_64::vcpu::VcpuState) {
         }
     }
 
-    let xsave = vcpu.xsave.as_mut_fam_struct();
+    let xsave = unsafe { vcpu.xsave.as_mut_fam_struct() };
     let region_u32 = &mut xsave.xsave.region;
     let region_bytes = unsafe {
         std::slice::from_raw_parts_mut(
@@ -77,6 +78,7 @@ fn clear_mpx_for_vcpu(vcpu: &mut vmm::arch::x86_64::vcpu::VcpuState) {
 
     clear_header_bits(region_bytes);
     zero_mpx_payload(region_bytes);
+    clear_mpx_msrs(vcpu);
 }
 
 fn clear_header_bits(region_bytes: &mut [u8]) {
@@ -110,9 +112,34 @@ fn zero_mpx_payload(region_bytes: &mut [u8]) {
     }
 }
 
+fn clear_mpx_msrs(vcpu: &mut vmm::arch::x86_64::vcpu::VcpuState) {
+    use kvm_bindings::kvm_msr_entry;
+    use vmm_sys_util::fam::FamStruct;
+
+    for msr_chunk in &mut vcpu.saved_msrs {
+        let entries: &mut [kvm_msr_entry] = msr_chunk.as_mut_slice();
+        let mut write_idx = 0;
+        for idx in 0..entries.len() {
+            if entries[idx].index != IA32_BNDCFGS_MSR {
+                if write_idx != idx {
+                    entries[write_idx] = entries[idx];
+                }
+                write_idx += 1;
+            }
+        }
+        unsafe {
+            msr_chunk.as_mut_fam_struct().nmsrs = write_idx as u32;
+        }
+    }
+
+    vcpu.saved_msrs
+        .retain(|chunk| chunk.as_fam_struct_ref().nmsrs != 0);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kvm_bindings::{Msrs, kvm_msr_entry};
     use vmm::arch::x86_64::vcpu::VcpuState;
 
     fn build_test_vcpu() -> VcpuState {
@@ -128,6 +155,14 @@ mod tests {
         xsave.xsave.region[XCOMP_BV_OFFSET / 4 + 1] = (MPX_FEATURE_MASK >> 32) as u32;
 
         drop(xsave);
+
+        let mut msrs = Msrs::new(1).unwrap();
+        msrs.as_mut_slice()[0] = kvm_msr_entry {
+            index: IA32_BNDCFGS_MSR,
+            ..Default::default()
+        };
+        vcpu.saved_msrs.push(msrs);
+
         vcpu
     }
 
@@ -161,5 +196,7 @@ mod tests {
                 .iter()
                 .all(|&b| b == 0)
         );
+
+        assert!(vcpu.saved_msrs.is_empty());
     }
 }
