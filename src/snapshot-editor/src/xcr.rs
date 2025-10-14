@@ -4,6 +4,8 @@
 use std::{collections::HashSet, convert::TryInto, path::PathBuf};
 
 use clap::{Args, Subcommand};
+#[cfg(target_arch = "x86_64")]
+use libc;
 
 use crate::utils::{UtilsError, open_vmstate, save_vmstate};
 
@@ -215,7 +217,7 @@ fn reconcile(args: ReconcileArgs) -> Result<(), XcrCommandError> {
             .clone()
             .unwrap_or(args.vmstate_path.clone());
 
-        let kvm = Kvm::new().map_err(XcrCommandError::DetectOpenKvm)?;
+        let kvm = Kvm::new().map_err(|err| XcrCommandError::DetectOpenKvm(err.into()))?;
         let host_xsave_mask = detect_host_xsave_mask(&kvm)?;
         let host_msrs = detect_host_msrs(&kvm)?;
         let keep_mask = args
@@ -348,13 +350,9 @@ fn zero_extended_xsave(region_bytes: &mut [u8]) {
 
 #[cfg(target_arch = "x86_64")]
 fn detect_host_xsave_mask(kvm: &kvm_ioctls::Kvm) -> Result<u64, XcrCommandError> {
-    use kvm_bindings::KVM_MAX_CPUID_ENTRIES;
-
-    let mut cpuid = kvm
-        .get_supported_cpuid(KVM_MAX_CPUID_ENTRIES)
-        .map_err(XcrCommandError::DetectCpuid)?;
+    let cpuid = fetch_supported_cpuid(kvm)?;
     let mut mask = 0u64;
-    for entry in cpuid.as_mut_slice().iter() {
+    for entry in cpuid.as_slice().iter() {
         if entry.function == 0xD && entry.index == 0 {
             mask = ((entry.edx as u64) << 32) | entry.eax as u64;
             break;
@@ -364,6 +362,21 @@ fn detect_host_xsave_mask(kvm: &kvm_ioctls::Kvm) -> Result<u64, XcrCommandError>
         mask = 0x3; // x87 | SSE
     }
     Ok(mask)
+}
+
+#[cfg(target_arch = "x86_64")]
+fn fetch_supported_cpuid(kvm: &kvm_ioctls::Kvm) -> Result<kvm_bindings::CpuId, XcrCommandError> {
+    let mut num_entries = kvm_bindings::KVM_MAX_CPUID_ENTRIES as usize;
+    const MAX_ENTRIES: usize = 4096;
+    loop {
+        match kvm.get_supported_cpuid(num_entries) {
+            Ok(cpuid) => return Ok(cpuid),
+            Err(e) if e.errno() == libc::ENOMEM && num_entries < MAX_ENTRIES => {
+                num_entries = (num_entries * 2).min(MAX_ENTRIES);
+            }
+            Err(e) => return Err(XcrCommandError::DetectCpuid(e)),
+        }
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
