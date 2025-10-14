@@ -365,8 +365,8 @@ fn detect_host_xsave_mask(kvm: &kvm_ioctls::Kvm) -> Result<u64, XcrCommandError>
 }
 
 #[cfg(target_arch = "x86_64")]
-fn fetch_supported_cpuid(kvm: &kvm_ioctls::Kvm) -> Result<kvm_bindings::CpuId, XcrCommandError> {
-    let mut num_entries = kvm_bindings::KVM_MAX_CPUID_ENTRIES as usize;
+fn fetch_supported_cpuid(kvm: &kvm_ioctls::Kvm) -> Result<kvm_ioctls::CpuId, XcrCommandError> {
+    let mut num_entries = kvm_ioctls::KVM_MAX_CPUID_ENTRIES as usize;
     const MAX_ENTRIES: usize = 4096;
     loop {
         match kvm.get_supported_cpuid(num_entries) {
