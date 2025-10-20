@@ -12,7 +12,6 @@ pub enum TscCommandError {
     /// {0}
     Utils(#[from] UtilsError),
     /// Missing --tsc-khz value; provide a target frequency in kHz.
-    MissingFrequency,
     #[cfg(target_arch = "x86_64")]
     /// Failed to open /dev/kvm: {0}
     DetectOpenKvm(#[from] kvm_ioctls::Error),

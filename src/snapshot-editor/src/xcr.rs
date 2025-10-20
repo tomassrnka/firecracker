@@ -15,8 +15,6 @@ use crate::utils::{UtilsError, open_vmstate, save_vmstate};
 pub enum XcrCommandError {
     /// {0}
     Utils(#[from] UtilsError),
-    /// This command is not supported on the current architecture.
-    UnsupportedArchitecture,
     #[cfg(target_arch = "x86_64")]
     /// Failed to open /dev/kvm: {0}
     DetectOpenKvm(std::io::Error),
@@ -132,8 +130,6 @@ fn clear_mpx(args: ClearMpxArgs) -> Result<(), XcrCommandError> {
 }
 
 fn remove_msrs(args: RemoveMsrsArgs) -> Result<(), XcrCommandError> {
-    use vmm_sys_util::fam::FamStruct;
-
     let output_path = args
         .output_path
         .clone()
@@ -166,8 +162,6 @@ fn remove_msrs(args: RemoveMsrsArgs) -> Result<(), XcrCommandError> {
 }
 
 fn list_msrs(args: ListMsrsArgs) -> Result<(), XcrCommandError> {
-    use vmm_sys_util::fam::FamStruct;
-
     let (microvm_state, _) = open_vmstate(&args.vmstate_path)?;
 
     for (idx, vcpu) in microvm_state.vcpu_states.iter().enumerate() {
@@ -238,8 +232,6 @@ fn reconcile(args: ReconcileArgs) -> Result<(), XcrCommandError> {
 }
 
 fn clear_mpx_for_vcpu(vcpu: &mut vmm::arch::x86_64::vcpu::VcpuState) {
-    use vmm_sys_util::fam::FamStruct;
-
     for xcr in vcpu.xcrs.xcrs.iter_mut().take(vcpu.xcrs.nr_xcrs as usize) {
         if xcr.xcr == 0 {
             xcr.value &= !MPX_FEATURE_MASK;
@@ -293,7 +285,6 @@ fn zero_mpx_payload(region_bytes: &mut [u8]) {
 
 fn clear_mpx_msrs(vcpu: &mut vmm::arch::x86_64::vcpu::VcpuState) {
     use kvm_bindings::kvm_msr_entry;
-    use vmm_sys_util::fam::FamStruct;
 
     for msr_chunk in &mut vcpu.saved_msrs {
         let entries: &mut [kvm_msr_entry] = msr_chunk.as_mut_slice();
@@ -320,8 +311,6 @@ fn restrict_xsave_for_vcpu(
     keep_mask: u64,
     zero_removed: bool,
 ) {
-    use vmm_sys_util::fam::FamStruct;
-
     for xcr in vcpu.xcrs.xcrs.iter_mut().take(vcpu.xcrs.nr_xcrs as usize) {
         if xcr.xcr == 0 {
             xcr.value &= keep_mask;
@@ -397,8 +386,6 @@ fn detect_host_msrs(kvm: &kvm_ioctls::Kvm) -> Result<HashSet<u32>, XcrCommandErr
 }
 
 fn retain_msrs_in_set(vcpu: &mut vmm::arch::x86_64::vcpu::VcpuState, allowed: &HashSet<u32>) {
-    use vmm_sys_util::fam::FamStruct;
-
     for msr_chunk in &mut vcpu.saved_msrs {
         let entries = msr_chunk.as_mut_slice();
         let mut write_idx = 0;
