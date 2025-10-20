@@ -807,7 +807,7 @@ fn sanitize_xsave(xsave: &mut Xsave, xcrs: &mut kvm_xcrs) {
         }
     }
 
-    let xs2 = xsave.as_mut_fam_struct();
+    let xs2 = unsafe { xsave.as_mut_fam_struct() };
     let extra_bytes = xs2.len * std::mem::size_of::<u32>();
     let region = unsafe {
         slice::from_raw_parts_mut(xs2.xsave.region.as_mut_ptr() as *mut u8, 4096 + extra_bytes)
