@@ -5,8 +5,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the THIRD-PARTY file.
 
+use std::cmp::min;
 use std::collections::BTreeMap;
+use std::convert::TryInto;
 use std::fmt::Debug;
+use std::slice;
 
 use kvm_bindings::{
     CpuId, KVM_MAX_CPUID_ENTRIES, KVM_MAX_MSR_ENTRIES, Msrs, Xsave, kvm_debugregs, kvm_lapic_state,
@@ -668,20 +671,16 @@ impl KvmVcpu {
         self.fd
             .set_sregs(&state.sregs)
             .map_err(KvmVcpuError::VcpuSetSregs)?;
+        let mut xsave = state.xsave.clone();
+        let mut xcrs = state.xcrs;
+        sanitize_xsave(&mut xsave, &mut xcrs);
         // SAFETY: Safe unless the snapshot is corrupted.
         unsafe {
-            // kvm-ioctl's `set_xsave2()` can be called even on kernel versions not supporting
-            // `KVM_CAP_XSAVE2`, because it internally calls `KVM_SET_XSAVE` API that was extended
-            // by Linux kernel. Thus, `KVM_SET_XSAVE2` API does not exist as a KVM interface.
-            // However, kvm-ioctl added `set_xsave2()` to allow users to pass `Xsave` instead of the
-            // older `kvm_xsave`.
             self.fd
-                .set_xsave2(&state.xsave)
+                .set_xsave2(&xsave)
                 .map_err(KvmVcpuError::VcpuSetXsave)?;
         }
-        self.fd
-            .set_xcrs(&state.xcrs)
-            .map_err(KvmVcpuError::VcpuSetXcrs)?;
+        self.fd.set_xcrs(&xcrs).map_err(KvmVcpuError::VcpuSetXcrs)?;
         self.fd
             .set_debug_regs(&state.debug_regs)
             .map_err(KvmVcpuError::VcpuSetDebugRegs)?;
@@ -689,7 +688,12 @@ impl KvmVcpu {
             .set_lapic(&state.lapic)
             .map_err(KvmVcpuError::VcpuSetLapic)?;
         for msrs in &state.saved_msrs {
-            let nmsrs = self.fd.set_msrs(msrs).map_err(KvmVcpuError::VcpuSetMsrs)?;
+            let mut msrs = msrs.clone();
+            filter_mpx_msrs(&mut msrs);
+            if msrs.as_fam_struct_ref().nmsrs == 0 {
+                continue;
+            }
+            let nmsrs = self.fd.set_msrs(&msrs).map_err(KvmVcpuError::VcpuSetMsrs)?;
             if nmsrs < msrs.as_fam_struct_ref().nmsrs as usize {
                 return Err(KvmVcpuError::VcpuSetMsrsIncomplete);
             }
@@ -784,6 +788,69 @@ impl Debug for VcpuState {
             .field("xsave", &self.xsave)
             .field("tsc_khz", &self.tsc_khz)
             .finish()
+    }
+}
+
+const IA32_BNDCFGS: u32 = 0x0000_0D90;
+const MPX_MASK: u64 = !((1u64 << 3) | (1u64 << 4));
+const XSTATE_BV_OFFSET: usize = 512;
+const XCOMP_BV_OFFSET: usize = 520;
+const BNDREGS_OFFSET: usize = 832;
+const BNDCSR_OFFSET: usize = 896;
+const MPX_SECTION_SIZE: usize = 64;
+
+fn sanitize_xsave(xsave: &mut Xsave, xcrs: &mut kvm_xcrs) {
+    let entries = min(xcrs.nr_xcrs as usize, xcrs.xcrs.len());
+    for xcr in xcrs.xcrs.iter_mut().take(entries) {
+        if xcr.xcr == 0 {
+            xcr.value &= MPX_MASK;
+        }
+    }
+
+    let xs2 = xsave.as_mut_fam_struct();
+    let extra_bytes = xs2.len * std::mem::size_of::<u32>();
+    let region = unsafe {
+        slice::from_raw_parts_mut(xs2.xsave.region.as_mut_ptr() as *mut u8, 4096 + extra_bytes)
+    };
+
+    let mut xstate = u64::from_le_bytes(
+        region[XSTATE_BV_OFFSET..XSTATE_BV_OFFSET + 8]
+            .try_into()
+            .unwrap(),
+    );
+    xstate &= MPX_MASK;
+    region[XSTATE_BV_OFFSET..XSTATE_BV_OFFSET + 8].copy_from_slice(&xstate.to_le_bytes());
+
+    let mut xcomp = u64::from_le_bytes(
+        region[XCOMP_BV_OFFSET..XCOMP_BV_OFFSET + 8]
+            .try_into()
+            .unwrap(),
+    );
+    xcomp &= MPX_MASK;
+    region[XCOMP_BV_OFFSET..XCOMP_BV_OFFSET + 8].copy_from_slice(&xcomp.to_le_bytes());
+
+    if region.len() >= BNDREGS_OFFSET + MPX_SECTION_SIZE {
+        region[BNDREGS_OFFSET..BNDREGS_OFFSET + MPX_SECTION_SIZE].fill(0);
+    }
+    if region.len() >= BNDCSR_OFFSET + MPX_SECTION_SIZE {
+        region[BNDCSR_OFFSET..BNDCSR_OFFSET + MPX_SECTION_SIZE].fill(0);
+    }
+}
+
+fn filter_mpx_msrs(msrs: &mut Msrs) {
+    let entries = msrs.as_mut_slice();
+    let mut write = 0usize;
+    for read in 0..entries.len() {
+        if entries[read].index == IA32_BNDCFGS {
+            continue;
+        }
+        if write != read {
+            entries[write] = entries[read];
+        }
+        write += 1;
+    }
+    unsafe {
+        msrs.as_mut_fam_struct().nmsrs = write as u32;
     }
 }
 
