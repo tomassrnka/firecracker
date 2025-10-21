@@ -9,22 +9,22 @@ use crate::utils::{UtilsError, open_vmstate, save_vmstate};
 
 #[derive(Debug, thiserror::Error)]
 pub enum TscCommandError {
-    /// {0}
     #[error("{0}")]
     Utils(#[from] UtilsError),
-    /// Missing --tsc-khz value; provide a target frequency in kHz.
+    #[error("Missing --tsc-khz value; provide a target frequency in kHz.")]
+    MissingFrequency,
     #[cfg(target_arch = "x86_64")]
-    /// Failed to open /dev/kvm: {0}
-    DetectOpenKvm(#[from] kvm_ioctls::Error),
+    #[error("Failed to open /dev/kvm: {0}")]
+    DetectOpenKvm(kvm_ioctls::Error),
     #[cfg(target_arch = "x86_64")]
-    /// Failed to create KVM VM: {0}
-    DetectCreateVm(#[source] kvm_ioctls::Error),
+    #[error("Failed to create KVM VM: {0}")]
+    DetectCreateVm(kvm_ioctls::Error),
     #[cfg(target_arch = "x86_64")]
-    /// Failed to create KVM vCPU: {0}
-    DetectCreateVcpu(#[source] kvm_ioctls::Error),
+    #[error("Failed to create KVM vCPU: {0}")]
+    DetectCreateVcpu(kvm_ioctls::Error),
     #[cfg(target_arch = "x86_64")]
-    /// Failed to query TSC frequency from KVM: {0}
-    DetectQueryTsc(#[source] kvm_ioctls::Error),
+    #[error("Failed to query TSC frequency from KVM: {0}")]
+    DetectQueryTsc(kvm_ioctls::Error),
 }
 
 #[derive(Debug, Subcommand)]
@@ -91,7 +91,7 @@ fn set_tsc(args: SetTscArgs) -> Result<(), TscCommandError> {
 fn detect_host_tsc_khz() -> Result<u32, TscCommandError> {
     use kvm_ioctls::Kvm;
 
-    let kvm = Kvm::new()?;
+    let kvm = Kvm::new().map_err(TscCommandError::DetectOpenKvm)?;
     let vm = kvm.create_vm().map_err(TscCommandError::DetectCreateVm)?;
     let vcpu = vm
         .create_vcpu(0)
