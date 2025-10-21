@@ -875,42 +875,15 @@ const BNDREGS_OFFSET: usize = 832;
 const BNDCSR_OFFSET: usize = 896;
 const MPX_SECTION_SIZE: usize = 64;
 
-fn sanitize_xsave(xsave: &mut Xsave, xcrs: &mut kvm_xcrs) {
-    let entries = min(xcrs.nr_xcrs as usize, xcrs.xcrs.len());
-    for xcr in xcrs.xcrs.iter_mut().take(entries) {
-        if xcr.xcr == 0 {
-            xcr.value &= MPX_MASK;
-        }
-    }
-
-    let xs2 = xsave.as_mut_fam_struct();
-    let extra_bytes = xs2.len * std::mem::size_of::<u32>();
-    let region = unsafe {
-        slice::from_raw_parts_mut(xs2.xsave.region.as_mut_ptr() as *mut u8, 4096 + extra_bytes)
-    };
-
-    let mut xstate = u64::from_le_bytes(
-        region[XSTATE_BV_OFFSET..XSTATE_BV_OFFSET + 8]
-            .try_into()
-            .unwrap(),
-    );
-    xstate &= MPX_MASK;
-    region[XSTATE_BV_OFFSET..XSTATE_BV_OFFSET + 8].copy_from_slice(&xstate.to_le_bytes());
-
-    let mut xcomp = u64::from_le_bytes(
-        region[XCOMP_BV_OFFSET..XCOMP_BV_OFFSET + 8]
-            .try_into()
-            .unwrap(),
-    );
-    xcomp &= MPX_MASK;
-    region[XCOMP_BV_OFFSET..XCOMP_BV_OFFSET + 8].copy_from_slice(&xcomp.to_le_bytes());
-
-    if region.len() >= BNDREGS_OFFSET + MPX_SECTION_SIZE {
-        region[BNDREGS_OFFSET..BNDREGS_OFFSET + MPX_SECTION_SIZE].fill(0);
-    }
-    if region.len() >= BNDCSR_OFFSET + MPX_SECTION_SIZE {
-        region[BNDCSR_OFFSET..BNDCSR_OFFSET + MPX_SECTION_SIZE].fill(0);
-    }
+fn sanitize_compacted_xsave(xs: &mut Xsave, xcrs: &mut kvm_xcrs, allowed: u64) {
+    strip_features(xcrs, allowed);
+    let raw = unsafe { xs.as_mut_fam_struct() };
+    let extra_bytes = raw.len * std::mem::size_of::<u32>();
+    let total_bytes = LEGACY_SIZE + HEADER_SIZE + extra_bytes;
+    let region =
+        unsafe { slice::from_raw_parts_mut(raw.xsave.region.as_mut_ptr() as *mut u8, total_bytes) };
+    mask_header(region, allowed);
+    region[(LEGACY_SIZE + HEADER_SIZE)..].fill(0);
 }
 
 fn filter_mpx_msrs(msrs: &mut Msrs) {
