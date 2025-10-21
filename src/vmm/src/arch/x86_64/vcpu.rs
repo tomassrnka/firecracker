@@ -770,82 +770,6 @@ pub struct VcpuState {
 
 impl Debug for VcpuState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        const IA32_BNDCFGS: u32 = 0x0000_0D90;
-        const XFEATURE_BNDREGS: u64 = 1 << 3;
-        const XFEATURE_BNDCSR: u64 = 1 << 4;
-        const MPX_MASK: u64 = !(XFEATURE_BNDREGS | XFEATURE_BNDCSR);
-        const LEGACY_SIZE: usize = 512;
-        const HEADER_SIZE: usize = 64;
-        const XSTATE_BV_OFFSET: usize = LEGACY_SIZE;
-        const XCOMP_BV_OFFSET: usize = LEGACY_SIZE + 8;
-
-        fn strip_features(xcrs: &mut kvm_xcrs, allowed: u64) {
-            let count = min(xcrs.nr_xcrs as usize, xcrs.xcrs.len());
-            for xcr in xcrs.xcrs.iter_mut().take(count) {
-                if xcr.xcr == 0 {
-                    xcr.value &= allowed;
-                }
-            }
-        }
-
-        fn mask_header(region: &mut [u8], allowed: u64) {
-            let mut xstate = u64::from_le_bytes(
-                region[XSTATE_BV_OFFSET..XSTATE_BV_OFFSET + 8]
-                    .try_into()
-                    .unwrap(),
-            );
-            xstate &= allowed;
-            region[XSTATE_BV_OFFSET..XSTATE_BV_OFFSET + 8].copy_from_slice(&xstate.to_le_bytes());
-
-            let mut xcomp = u64::from_le_bytes(
-                region[XCOMP_BV_OFFSET..XCOMP_BV_OFFSET + 8]
-                    .try_into()
-                    .unwrap(),
-            );
-            xcomp &= allowed;
-            region[XCOMP_BV_OFFSET..XCOMP_BV_OFFSET + 8].copy_from_slice(&xcomp.to_le_bytes());
-        }
-
-        fn sanitize_standard_xsave(xs: &mut kvm_xsave, xcrs: &mut kvm_xcrs, allowed: u64) {
-            strip_features(xcrs, allowed);
-            let region = unsafe {
-                std::slice::from_raw_parts_mut(
-                    xs.region.as_mut_ptr() as *mut u8,
-                    LEGACY_SIZE + HEADER_SIZE,
-                )
-            };
-            mask_header(region, allowed);
-        }
-
-        fn sanitize_compacted_xsave(xs: &mut Xsave, xcrs: &mut kvm_xcrs, allowed: u64) {
-            strip_features(xcrs, allowed);
-            let raw = unsafe { xs.as_mut_fam_struct() };
-            let extra_bytes = raw.len * std::mem::size_of::<u32>();
-            let total_bytes = LEGACY_SIZE + HEADER_SIZE + extra_bytes;
-            let region = unsafe {
-                slice::from_raw_parts_mut(raw.xsave.region.as_mut_ptr() as *mut u8, total_bytes)
-            };
-            mask_header(region, allowed);
-            region[(LEGACY_SIZE + HEADER_SIZE)..].fill(0);
-        }
-
-        fn filter_mpx_msrs(msrs: &mut Msrs) {
-            let entries = msrs.as_mut_slice();
-            let mut write = 0usize;
-            for read in 0..entries.len() {
-                if entries[read].index == IA32_BNDCFGS {
-                    continue;
-                }
-                if write != read {
-                    entries[write] = entries[read];
-                }
-                write += 1;
-            }
-            unsafe {
-                msrs.as_mut_fam_struct().nmsrs = write as u32;
-            }
-        }
-
         let mut debug_kvm_regs: Vec<kvm_bindings::kvm_msrs> = Vec::new();
         for kvm_msrs in self.saved_msrs.iter() {
             debug_kvm_regs = kvm_msrs.clone().into_raw();
@@ -868,12 +792,48 @@ impl Debug for VcpuState {
 }
 
 const IA32_BNDCFGS: u32 = 0x0000_0D90;
-const MPX_MASK: u64 = !((1u64 << 3) | (1u64 << 4));
-const XSTATE_BV_OFFSET: usize = 512;
-const XCOMP_BV_OFFSET: usize = 520;
-const BNDREGS_OFFSET: usize = 832;
-const BNDCSR_OFFSET: usize = 896;
-const MPX_SECTION_SIZE: usize = 64;
+const XFEATURE_BNDREGS: u64 = 1 << 3;
+const XFEATURE_BNDCSR: u64 = 1 << 4;
+const MPX_MASK: u64 = !(XFEATURE_BNDREGS | XFEATURE_BNDCSR);
+const LEGACY_SIZE: usize = 512;
+const HEADER_SIZE: usize = 64;
+const XSTATE_BV_OFFSET: usize = LEGACY_SIZE;
+const XCOMP_BV_OFFSET: usize = LEGACY_SIZE + 8;
+
+fn strip_features(xcrs: &mut kvm_xcrs, allowed: u64) {
+    let count = min(xcrs.nr_xcrs as usize, xcrs.xcrs.len());
+    for xcr in xcrs.xcrs.iter_mut().take(count) {
+        if xcr.xcr == 0 {
+            xcr.value &= allowed;
+        }
+    }
+}
+
+fn mask_header(region: &mut [u8], allowed: u64) {
+    let mut xstate = u64::from_le_bytes(
+        region[XSTATE_BV_OFFSET..XSTATE_BV_OFFSET + 8]
+            .try_into()
+            .unwrap(),
+    );
+    xstate &= allowed;
+    region[XSTATE_BV_OFFSET..XSTATE_BV_OFFSET + 8].copy_from_slice(&xstate.to_le_bytes());
+
+    let mut xcomp = u64::from_le_bytes(
+        region[XCOMP_BV_OFFSET..XCOMP_BV_OFFSET + 8]
+            .try_into()
+            .unwrap(),
+    );
+    xcomp &= allowed;
+    region[XCOMP_BV_OFFSET..XCOMP_BV_OFFSET + 8].copy_from_slice(&xcomp.to_le_bytes());
+}
+
+fn sanitize_standard_xsave(xs: &mut kvm_xsave, xcrs: &mut kvm_xcrs, allowed: u64) {
+    strip_features(xcrs, allowed);
+    let region = unsafe {
+        std::slice::from_raw_parts_mut(xs.region.as_mut_ptr() as *mut u8, LEGACY_SIZE + HEADER_SIZE)
+    };
+    mask_header(region, allowed);
+}
 
 fn sanitize_compacted_xsave(xs: &mut Xsave, xcrs: &mut kvm_xcrs, allowed: u64) {
     strip_features(xcrs, allowed);
@@ -884,6 +844,10 @@ fn sanitize_compacted_xsave(xs: &mut Xsave, xcrs: &mut kvm_xcrs, allowed: u64) {
         unsafe { slice::from_raw_parts_mut(raw.xsave.region.as_mut_ptr() as *mut u8, total_bytes) };
     mask_header(region, allowed);
     region[(LEGACY_SIZE + HEADER_SIZE)..].fill(0);
+}
+
+fn sanitize_xsave(xsave: &mut Xsave, xcrs: &mut kvm_xcrs) {
+    sanitize_compacted_xsave(xsave, xcrs, MPX_MASK);
 }
 
 fn filter_mpx_msrs(msrs: &mut Msrs) {
