@@ -10,12 +10,14 @@ use std::collections::BTreeMap;
 use std::convert::TryInto;
 use std::fmt::Debug;
 use std::slice;
+use std::sync::OnceLock;
 
 use kvm_bindings::{
     CpuId, KVM_MAX_CPUID_ENTRIES, KVM_MAX_MSR_ENTRIES, Msrs, Xsave, kvm_debugregs, kvm_lapic_state,
     kvm_mp_state, kvm_regs, kvm_sregs, kvm_vcpu_events, kvm_xcrs, kvm_xsave, kvm_xsave2,
 };
-use kvm_ioctls::{VcpuExit, VcpuFd};
+use kvm_ioctls::{Kvm as RawKvm, VcpuExit, VcpuFd};
+use libc;
 use log::{error, warn};
 use serde::{Deserialize, Serialize};
 use vmm_sys_util::fam::{self, FamStruct};
@@ -801,6 +803,62 @@ const LEGACY_SIZE: usize = 512;
 const HEADER_SIZE: usize = 64;
 const XSTATE_BV_OFFSET: usize = LEGACY_SIZE;
 const XCOMP_BV_OFFSET: usize = LEGACY_SIZE + 8;
+const MIN_XSAVE_MASK: u64 = 0x3;
+
+fn allowed_xsave_mask() -> u64 {
+    host_xsave_mask() & MPX_MASK
+}
+
+fn host_xsave_mask() -> u64 {
+    static HOST_XSAVE_MASK: OnceLock<u64> = OnceLock::new();
+    *HOST_XSAVE_MASK.get_or_init(detect_host_xsave_mask)
+}
+
+fn detect_host_xsave_mask() -> u64 {
+    let kvm = match RawKvm::new() {
+        Ok(fd) => fd,
+        Err(err) => {
+            warn!("Falling back to minimal XSAVE mask; failed to open /dev/kvm: {err}");
+            return MIN_XSAVE_MASK;
+        }
+    };
+
+    let mut num_entries = KVM_MAX_CPUID_ENTRIES as usize;
+    const MAX_ENTRIES: usize = 4096;
+    loop {
+        match kvm.get_supported_cpuid(num_entries) {
+            Ok(cpuid) => {
+                let mut mask = 0u64;
+                for entry in cpuid.as_slice() {
+                    if entry.function == 0xD && entry.index == 0 {
+                        mask = ((entry.edx as u64) << 32) | entry.eax as u64;
+                        break;
+                    }
+                }
+                if mask == 0 {
+                    warn!(
+                        "Host CPUID leaf 0xD returned no XSAVE features; falling back to x87|SSE"
+                    );
+                    return MIN_XSAVE_MASK;
+                }
+                return mask;
+            }
+            Err(err) if err.errno() == libc::ENOMEM && num_entries < MAX_ENTRIES => {
+                num_entries = (num_entries * 2).min(MAX_ENTRIES);
+            }
+            Err(err) if err.errno() == libc::ENOMEM => {
+                warn!(
+                    "Host CPUID enumeration hit ENOMEM at {num_entries} entries; using x87|SSE mask"
+                );
+                return MIN_XSAVE_MASK;
+            }
+            Err(err) => {
+                warn!("Failed to query host CPUID: {err}; using x87|SSE mask");
+                return MIN_XSAVE_MASK;
+            }
+        }
+    }
+}
 
 fn strip_features(xcrs: &mut kvm_xcrs, allowed: u64) {
     let count = min(xcrs.nr_xcrs as usize, xcrs.xcrs.len());
@@ -860,18 +918,28 @@ fn sanitize_compacted_xsave(xs: &mut Xsave, xcrs: &mut kvm_xcrs, allowed: u64) {
 }
 
 fn sanitize_xsave(xsave: &mut Xsave, xcrs: &mut kvm_xcrs) {
-    sanitize_compacted_xsave(xsave, xcrs, MPX_MASK);
+    sanitize_xsave_with_mask(xsave, xcrs, allowed_xsave_mask());
+}
+
+fn sanitize_xsave_with_mask(xsave: &mut Xsave, xcrs: &mut kvm_xcrs, allowed: u64) {
+    sanitize_compacted_xsave(xsave, xcrs, allowed);
 }
 
 fn sanitize_cpuid(cpuid: &mut CpuId) {
-    const MPX_CPUID_BIT: u32 = 1 << 14;
-    let allowed_low = (MPX_MASK & u64::from(u32::MAX)) as u32;
-    let allowed_high = (MPX_MASK >> 32) as u32;
+    sanitize_cpuid_with_mask(cpuid, allowed_xsave_mask());
+}
 
+fn sanitize_cpuid_with_mask(cpuid: &mut CpuId, allowed: u64) {
+    const MPX_CPUID_BIT: u32 = 1 << 14;
+    let allowed_low = (allowed & u64::from(u32::MAX)) as u32;
+    let allowed_high = (allowed >> 32) as u32;
+    let mpx_allowed = (allowed & (XFEATURE_BNDREGS | XFEATURE_BNDCSR)) != 0;
     for entry in cpuid.as_mut_slice() {
         match (entry.function, entry.index) {
             (0x7, 0) => {
-                entry.ebx &= !MPX_CPUID_BIT;
+                if !mpx_allowed {
+                    entry.ebx &= !MPX_CPUID_BIT;
+                }
             }
             (0xD, 0) => {
                 entry.eax &= allowed_low;
@@ -1457,7 +1525,7 @@ mod tests {
 
         let mut xcrs = state.xcrs;
         let mut xsave = state.xsave.clone();
-        sanitize_xsave(&mut xsave, &mut xcrs);
+        sanitize_xsave_with_mask(&mut xsave, &mut xcrs, MIN_XSAVE_MASK);
 
         assert_eq!(xcrs.xcrs[0].value & (XFEATURE_BNDREGS | XFEATURE_BNDCSR), 0);
 
@@ -1517,7 +1585,7 @@ mod tests {
             ..Default::default()
         };
 
-        sanitize_cpuid(&mut cpuid);
+        sanitize_cpuid_with_mask(&mut cpuid, MIN_XSAVE_MASK);
 
         assert_eq!(cpuid.as_slice()[0].ebx & (1 << 14), 0);
         assert_eq!(
