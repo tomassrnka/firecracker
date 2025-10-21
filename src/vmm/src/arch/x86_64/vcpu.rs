@@ -659,8 +659,10 @@ impl KvmVcpu {
         // SET_LAPIC must come before SET_MSRS, because the TSC deadline MSR
         // only restores successfully, when the LAPIC is correctly configured.
 
+        let mut cpuid = state.cpuid.clone();
+        sanitize_cpuid(&mut cpuid);
         self.fd
-            .set_cpuid2(&state.cpuid)
+            .set_cpuid2(&cpuid)
             .map_err(KvmVcpuError::VcpuSetCpuid)?;
         self.fd
             .set_mp_state(state.mp_state)
@@ -838,8 +840,19 @@ fn sanitize_standard_xsave(xs: &mut kvm_xsave, xcrs: &mut kvm_xcrs, allowed: u64
 fn sanitize_compacted_xsave(xs: &mut Xsave, xcrs: &mut kvm_xcrs, allowed: u64) {
     strip_features(xcrs, allowed);
     let raw = unsafe { xs.as_mut_fam_struct() };
-    let extra_bytes = raw.len * std::mem::size_of::<u32>();
-    let total_bytes = LEGACY_SIZE + HEADER_SIZE + extra_bytes;
+    let word_size = std::mem::size_of::<u32>();
+    let Some(base_bytes) = raw.xsave.region.len().checked_mul(word_size) else {
+        return;
+    };
+    let Some(extra_bytes) = raw.len.checked_mul(word_size) else {
+        return;
+    };
+    let Some(total_bytes) = base_bytes.checked_add(extra_bytes) else {
+        return;
+    };
+    if total_bytes < LEGACY_SIZE + HEADER_SIZE {
+        return;
+    }
     let region =
         unsafe { slice::from_raw_parts_mut(raw.xsave.region.as_mut_ptr() as *mut u8, total_bytes) };
     mask_header(region, allowed);
@@ -848,6 +861,36 @@ fn sanitize_compacted_xsave(xs: &mut Xsave, xcrs: &mut kvm_xcrs, allowed: u64) {
 
 fn sanitize_xsave(xsave: &mut Xsave, xcrs: &mut kvm_xcrs) {
     sanitize_compacted_xsave(xsave, xcrs, MPX_MASK);
+}
+
+fn sanitize_cpuid(cpuid: &mut CpuId) {
+    const MPX_CPUID_BIT: u32 = 1 << 14;
+    let allowed_low = (MPX_MASK & u64::from(u32::MAX)) as u32;
+    let allowed_high = (MPX_MASK >> 32) as u32;
+
+    for entry in cpuid.as_mut_slice() {
+        match (entry.function, entry.index) {
+            (0x7, 0) => {
+                entry.ebx &= !MPX_CPUID_BIT;
+            }
+            (0xD, 0) => {
+                entry.eax &= allowed_low;
+                entry.edx &= allowed_high;
+            }
+            (0xD, 1) => {
+                entry.ebx &= allowed_low;
+                entry.ecx &= allowed_low;
+                entry.edx &= allowed_high;
+            }
+            (0xD, subleaf) if subleaf == 3 || subleaf == 4 => {
+                entry.eax = 0;
+                entry.ebx = 0;
+                entry.ecx = 0;
+                entry.edx = 0;
+            }
+            _ => {}
+        }
+    }
 }
 
 fn filter_mpx_msrs(msrs: &mut Msrs) {
@@ -871,7 +914,7 @@ fn filter_mpx_msrs(msrs: &mut Msrs) {
 mod tests {
     #![allow(clippy::undocumented_unsafe_blocks)]
 
-    use kvm_bindings::kvm_msr_entry;
+    use kvm_bindings::{kvm_cpuid_entry2, kvm_msr_entry};
     use kvm_ioctls::Cap;
     use vm_memory::GuestAddress;
 
@@ -1387,5 +1430,103 @@ mod tests {
                     .chain(DEFERRED_MSRS.iter()),
             )
             .for_each(|(left, &right)| assert_eq!(left.index, right));
+    }
+
+    #[test]
+    fn test_sanitize_xsave_clears_mpx_payload() {
+        let mut state = VcpuState::default();
+        state.xcrs.nr_xcrs = 1;
+        state.xcrs.xcrs[0].xcr = 0;
+        state.xcrs.xcrs[0].value = 0b11 | XFEATURE_BNDREGS | XFEATURE_BNDCSR;
+
+        {
+            let raw = unsafe { state.xsave.as_mut_fam_struct() };
+            raw.xsave.region[XSTATE_BV_OFFSET / 4] =
+                (0b11 | XFEATURE_BNDREGS | XFEATURE_BNDCSR) as u32;
+            raw.xsave.region[XCOMP_BV_OFFSET / 4] = (XFEATURE_BNDREGS | XFEATURE_BNDCSR) as u32;
+
+            let region_bytes = unsafe {
+                std::slice::from_raw_parts_mut(
+                    raw.xsave.region.as_mut_ptr() as *mut u8,
+                    raw.xsave.region.len() * std::mem::size_of::<u32>(),
+                )
+            };
+            region_bytes[BNDREGS_OFFSET..BNDREGS_OFFSET + BNDREGS_SIZE].fill(0xAA);
+            region_bytes[BNDCSR_OFFSET..BNDCSR_OFFSET + BNDCSR_SIZE].fill(0xAA);
+        }
+
+        let mut xcrs = state.xcrs;
+        let mut xsave = state.xsave.clone();
+        sanitize_xsave(&mut xsave, &mut xcrs);
+
+        assert_eq!(xcrs.xcrs[0].value & (XFEATURE_BNDREGS | XFEATURE_BNDCSR), 0);
+
+        let raw = xsave.as_fam_struct_ref();
+        assert_eq!(
+            raw.xsave.region[XSTATE_BV_OFFSET / 4] & (XFEATURE_BNDREGS | XFEATURE_BNDCSR) as u32,
+            0
+        );
+        assert_eq!(
+            raw.xsave.region[XCOMP_BV_OFFSET / 4] & (XFEATURE_BNDREGS | XFEATURE_BNDCSR) as u32,
+            0
+        );
+
+        let region_bytes = unsafe {
+            std::slice::from_raw_parts(
+                raw.xsave.region.as_ptr() as *const u8,
+                raw.xsave.region.len() * std::mem::size_of::<u32>(),
+            )
+        };
+        assert!(
+            region_bytes[BNDREGS_OFFSET..BNDREGS_OFFSET + BNDREGS_SIZE]
+                .iter()
+                .all(|&b| b == 0)
+        );
+        assert!(
+            region_bytes[BNDCSR_OFFSET..BNDCSR_OFFSET + BNDCSR_SIZE]
+                .iter()
+                .all(|&b| b == 0)
+        );
+    }
+
+    #[test]
+    fn test_sanitize_cpuid_clears_mpx() {
+        let mut cpuid = CpuId::new(3).unwrap();
+        let entries = cpuid.as_mut_slice();
+
+        entries[0] = kvm_cpuid_entry2 {
+            function: 0x7,
+            index: 0,
+            ebx: (1 << 14) | 0x1,
+            ..Default::default()
+        };
+        entries[1] = kvm_cpuid_entry2 {
+            function: 0xD,
+            index: 0,
+            eax: (XFEATURE_BNDREGS | XFEATURE_BNDCSR | 0b11) as u32,
+            edx: ((XFEATURE_BNDREGS | XFEATURE_BNDCSR) >> 32) as u32,
+            ..Default::default()
+        };
+        entries[2] = kvm_cpuid_entry2 {
+            function: 0xD,
+            index: 3,
+            eax: 1,
+            ebx: 1,
+            ecx: 1,
+            edx: 1,
+            ..Default::default()
+        };
+
+        sanitize_cpuid(&mut cpuid);
+
+        assert_eq!(cpuid.as_slice()[0].ebx & (1 << 14), 0);
+        assert_eq!(
+            cpuid.as_slice()[1].eax & (XFEATURE_BNDREGS | XFEATURE_BNDCSR) as u32,
+            0
+        );
+        assert_eq!(cpuid.as_slice()[2].eax, 0);
+        assert_eq!(cpuid.as_slice()[2].ebx, 0);
+        assert_eq!(cpuid.as_slice()[2].ecx, 0);
+        assert_eq!(cpuid.as_slice()[2].edx, 0);
     }
 }
