@@ -7,9 +7,10 @@ use clap::{Args, Subcommand};
 
 use crate::utils::{UtilsError, open_vmstate, save_vmstate};
 
-#[derive(Debug, thiserror::Error, displaydoc::Display)]
+#[derive(Debug, thiserror::Error)]
 pub enum TscCommandError {
     /// {0}
+    #[error("{0}")]
     Utils(#[from] UtilsError),
     /// Missing --tsc-khz value; provide a target frequency in kHz.
     #[cfg(target_arch = "x86_64")]
