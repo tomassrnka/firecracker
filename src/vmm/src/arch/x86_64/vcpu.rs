@@ -686,13 +686,13 @@ impl KvmVcpu {
         let mut xsave = state.xsave.clone();
         let mut xcrs = state.xcrs;
         sanitize_xsave_with_mask(&mut xsave, &mut xcrs, sanitize_mask);
+        self.fd.set_xcrs(&xcrs).map_err(KvmVcpuError::VcpuSetXcrs)?;
         // SAFETY: Safe unless the snapshot is corrupted.
         unsafe {
             self.fd
                 .set_xsave2(&xsave)
                 .map_err(KvmVcpuError::VcpuSetXsave)?;
         }
-        self.fd.set_xcrs(&xcrs).map_err(KvmVcpuError::VcpuSetXcrs)?;
         self.fd
             .set_debug_regs(&state.debug_regs)
             .map_err(KvmVcpuError::VcpuSetDebugRegs)?;
@@ -903,6 +903,17 @@ fn mask_header(region: &mut [u8], allowed: u64) {
     region[XCOMP_BV_OFFSET..XCOMP_BV_OFFSET + 8].copy_from_slice(&xcomp.to_le_bytes());
 }
 
+fn initialize_legacy_area(region: &mut [u8]) {
+    if region.len() < LEGACY_SIZE {
+        return;
+    }
+    let legacy = &mut region[..LEGACY_SIZE];
+    legacy.fill(0);
+    legacy[0..2].copy_from_slice(&0x037f_u16.to_le_bytes());
+    legacy[24..28].copy_from_slice(&0x1f80_u32.to_le_bytes());
+    legacy[28..32].copy_from_slice(&0xffff_u32.to_le_bytes());
+}
+
 #[allow(dead_code)]
 fn sanitize_standard_xsave(xs: &mut kvm_xsave, xcrs: &mut kvm_xcrs, allowed: u64) {
     strip_features(xcrs, allowed);
@@ -939,6 +950,7 @@ fn sanitize_compacted_xsave(xs: &mut Xsave, xcrs: &mut kvm_xcrs, allowed: u64) {
     );
     let region =
         unsafe { slice::from_raw_parts_mut(raw.xsave.region.as_mut_ptr() as *mut u8, total_bytes) };
+    initialize_legacy_area(region);
     mask_header(region, allowed);
     region[(LEGACY_SIZE + HEADER_SIZE)..].fill(0);
     let after_xcr0 = xcrs
