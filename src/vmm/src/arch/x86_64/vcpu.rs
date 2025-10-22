@@ -804,6 +804,7 @@ const HEADER_SIZE: usize = 64;
 const XSTATE_BV_OFFSET: usize = LEGACY_SIZE;
 const XCOMP_BV_OFFSET: usize = LEGACY_SIZE + 8;
 const MIN_XSAVE_MASK: u64 = 0x3;
+const XCOMP_BV_COMPACTED_FORMAT: u64 = 1 << 63;
 
 fn allowed_xsave_mask() -> u64 {
     host_xsave_mask() & MPX_MASK
@@ -887,8 +888,10 @@ fn mask_header(region: &mut [u8], allowed: u64) {
             .try_into()
             .unwrap(),
     );
+    let compaction_flag = xcomp & XCOMP_BV_COMPACTED_FORMAT;
     xcomp &= allowed;
     xcomp |= required;
+    xcomp |= compaction_flag;
     region[XCOMP_BV_OFFSET..XCOMP_BV_OFFSET + 8].copy_from_slice(&xcomp.to_le_bytes());
 }
 
