@@ -695,7 +695,10 @@ impl KvmVcpu {
                     .map_err(KvmVcpuError::VcpuSetXsave)?;
                 eprintln!("[restore_state] used KVM_SET_XSAVE2");
             } else {
-                eprintln!("[restore_state] skipping XSTATE ioctl (minimal mask)");
+                self.fd
+                    .set_fpu(&state.default_fpu())
+                    .map_err(KvmVcpuError::VcpuSetFpu)?;
+                eprintln!("[restore_state] restored minimal FPU state via KVM_SET_FPU");
             }
         }
         self.fd
@@ -783,6 +786,17 @@ pub struct VcpuState {
     pub xsave: Xsave,
     /// Tsc khz.
     pub tsc_khz: Option<u32>,
+}
+
+impl VcpuState {
+    fn default_fpu(&self) -> kvm_bindings::kvm_fpu {
+        kvm_bindings::kvm_fpu {
+            fcw: 0x37f,
+            mxcsr: 0x1f80,
+            mxcsr_mask: 0xffff,
+            ..Default::default()
+        }
+    }
 }
 
 impl Debug for VcpuState {
