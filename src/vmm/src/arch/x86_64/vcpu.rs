@@ -913,6 +913,47 @@ fn initialize_legacy_area(region: &mut [u8]) {
     legacy[28..32].copy_from_slice(&0xffff_u32.to_le_bytes());
 }
 
+fn sanitize_extra_region(raw: &mut kvm_bindings::kvm_xsave2, allowed: u64) {
+    if allowed & !MIN_XSAVE_MASK == 0 {
+        let extra_slice = unsafe { raw.xsave.extra.as_mut_slice(raw.len) };
+        extra_slice.fill(0);
+        raw.len = 0;
+        return;
+    }
+
+    let highest_feature = 63_usize.saturating_sub(allowed.leading_zeros() as usize);
+    let required_dwords = match highest_feature {
+        0 | 1 => 0,
+        2 => 256, // AVX
+        3 => 320,
+        4 => 384,
+        5 => 416,
+        6 => 928, // AVX-512 upper halves
+        _ => raw.len,
+    };
+
+    if required_dwords < raw.len {
+        let extra_slice = unsafe { raw.xsave.extra.as_mut_slice(raw.len) };
+        for entry in extra_slice.iter_mut().skip(required_dwords) {
+            *entry = 0;
+        }
+        raw.len = required_dwords;
+    }
+}
+
+fn format_hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write;
+        let _ = write!(out, "{:02x}", byte);
+    }
+    out
+}
+
+const LEGACY_PREFIX_LEN: usize = 128;
+const EXTRA_PREFIX_LEN: usize = 128;
+const FULL_DUMP_LEN: usize = 2048;
+
 #[allow(dead_code)]
 fn sanitize_standard_xsave(xs: &mut kvm_xsave, xcrs: &mut kvm_xcrs, allowed: u64) {
     strip_features(xcrs, allowed);
@@ -970,19 +1011,27 @@ fn sanitize_compacted_xsave(xs: &mut Xsave, xcrs: &mut kvm_xcrs, allowed: u64) {
             .try_into()
             .unwrap(),
     );
-    let legacy_dump_len = 128.min(region.len());
-    let mut legacy_hex = String::new();
-    for byte in &region[..legacy_dump_len] {
-        use std::fmt::Write;
-        let _ = write!(legacy_hex, "{:02x}", byte);
-    }
+    let legacy_hex = hex_dump(&region[..LEGACY_PREFIX_LEN.min(region.len())]);
+    let extra_hex = if total_bytes > LEGACY_SIZE + HEADER_SIZE {
+        hex_dump(
+            &region[(LEGACY_SIZE + HEADER_SIZE)
+                ..(LEGACY_SIZE
+                    + HEADER_SIZE
+                    + EXTRA_PREFIX_LEN.min(total_bytes - (LEGACY_SIZE + HEADER_SIZE)))],
+        )
+    } else {
+        String::new()
+    };
+    let full_hex = hex_dump(&region[..total_bytes.min(FULL_DUMP_LEN)]);
     eprintln!(
-        "[sanitize_xsave_with_mask] xcr0_after={:?} xstate_bv={:#x} xcomp_bv={:#x} zeroed_bytes={} legacy_prefix={}",
+        "[sanitize_xsave_with_mask] xcr0_after={:?} xstate_bv={:#x} xcomp_bv={:#x} zeroed_bytes={} legacy_prefix={} extra_prefix={} full_dump={}",
         after_xcr0,
         xstate_bv,
         xcomp_bv,
         total_bytes.saturating_sub(LEGACY_SIZE + HEADER_SIZE),
-        legacy_hex
+        legacy_hex,
+        extra_hex,
+        full_hex
     );
 }
 
