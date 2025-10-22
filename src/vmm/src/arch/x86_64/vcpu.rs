@@ -13,8 +13,9 @@ use std::slice;
 use std::sync::OnceLock;
 
 use kvm_bindings::{
-    CpuId, KVM_MAX_CPUID_ENTRIES, KVM_MAX_MSR_ENTRIES, Msrs, Xsave, kvm_debugregs, kvm_lapic_state,
-    kvm_mp_state, kvm_regs, kvm_sregs, kvm_vcpu_events, kvm_xcrs, kvm_xsave, kvm_xsave2,
+    CpuId, KVM_MAX_CPUID_ENTRIES, KVM_MAX_MSR_ENTRIES, Msrs, Xsave, kvm_debugregs, kvm_fpu,
+    kvm_lapic_state, kvm_mp_state, kvm_regs, kvm_sregs, kvm_vcpu_events, kvm_xcrs, kvm_xsave,
+    kvm_xsave2,
 };
 use kvm_ioctls::{Kvm as RawKvm, VcpuExit, VcpuFd};
 use libc;
@@ -93,6 +94,8 @@ pub enum KvmVcpuError {
     VcpuSetDebugRegs(kvm_ioctls::Error),
     /// Failed to set KVM vcpu lapic: {0}
     VcpuSetLapic(kvm_ioctls::Error),
+    /// Failed to set KVM vcpu fpu: {0}
+    VcpuSetFpu(kvm_ioctls::Error),
     /// Failed to set KVM vcpu mp state: {0}
     VcpuSetMpState(kvm_ioctls::Error),
     /// Failed to set KVM vcpu msrs: {0}
@@ -794,12 +797,10 @@ pub struct VcpuState {
 
 impl VcpuState {
     fn default_fpu(&self) -> kvm_bindings::kvm_fpu {
-        kvm_bindings::kvm_fpu {
-            fcw: 0x37f,
-            mxcsr: 0x1f80,
-            mxcsr_mask: 0xffff,
-            ..Default::default()
-        }
+        let mut fpu = kvm_fpu::default();
+        fpu.fcw = 0x37f;
+        fpu.mxcsr = 0x1f80;
+        fpu
     }
 }
 
