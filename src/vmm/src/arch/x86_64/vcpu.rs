@@ -896,10 +896,9 @@ fn mask_header(region: &mut [u8], allowed: u64) {
             .try_into()
             .unwrap(),
     );
-    let compaction_flag = xcomp & XCOMP_BV_COMPACTED_FORMAT;
     xcomp &= allowed;
     xcomp |= required;
-    xcomp |= compaction_flag;
+    xcomp |= XCOMP_BV_COMPACTED_FORMAT;
     region[XCOMP_BV_OFFSET..XCOMP_BV_OFFSET + 8].copy_from_slice(&xcomp.to_le_bytes());
 }
 
@@ -933,6 +932,8 @@ fn sanitize_compacted_xsave(xs: &mut Xsave, xcrs: &mut kvm_xcrs, allowed: u64) {
     };
     let sanitize_extra = allowed & !MIN_XSAVE_MASK != 0;
     if !sanitize_extra {
+        let extra_slice = unsafe { raw.xsave.extra.as_mut_slice(raw.len) };
+        extra_slice.fill(0);
         raw.len = 0;
     }
     let extra_bytes = raw.len.saturating_mul(word_size);
