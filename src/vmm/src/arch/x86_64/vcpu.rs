@@ -664,7 +664,7 @@ impl KvmVcpu {
         // SET_LAPIC must come before SET_MSRS, because the TSC deadline MSR
         // only restores successfully, when the LAPIC is correctly configured.
 
-        let sanitize_mask = allowed_xsave_mask() & MPX_MASK;
+        let sanitize_mask = MIN_XSAVE_MASK;
         let mut cpuid = state.cpuid.clone();
         sanitize_cpuid_with_mask(&mut cpuid, sanitize_mask);
         self.fd
@@ -916,6 +916,23 @@ fn mask_header(region: &mut [u8], allowed: u64, compact_format: bool) {
     region[XCOMP_BV_OFFSET..XCOMP_BV_OFFSET + 8].copy_from_slice(&xcomp.to_le_bytes());
 }
 
+fn write_xstate_header(raw: &mut kvm_xsave2, allowed: u64, compact_format: bool) {
+    let header_index = LEGACY_SIZE / std::mem::size_of::<u32>();
+    let base_ptr = raw.xsave.region.as_mut_ptr();
+    unsafe {
+        let header_ptr = base_ptr.add(header_index) as *mut u64;
+        *header_ptr = allowed;
+        *header_ptr.add(1) = if compact_format {
+            allowed | XCOMP_BV_COMPACTED_FORMAT
+        } else {
+            0
+        };
+        for i in 2..8 {
+            *header_ptr.add(i) = 0;
+        }
+    }
+}
+
 fn initialize_legacy_area(region: &mut [u8]) {
     if region.len() < LEGACY_SIZE {
         return;
@@ -1005,6 +1022,7 @@ fn sanitize_compacted_xsave(xs: &mut Xsave, xcrs: &mut kvm_xcrs, allowed: u64) -
         unsafe { slice::from_raw_parts_mut(raw.xsave.region.as_mut_ptr() as *mut u8, total_bytes) };
     initialize_legacy_area(region);
     mask_header(region, allowed, use_xsave2);
+    write_xstate_header(raw, allowed, use_xsave2);
     region[(LEGACY_SIZE + HEADER_SIZE)..].fill(0);
     let after_xcr0 = xcrs
         .xcrs
