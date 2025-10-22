@@ -664,7 +664,14 @@ impl KvmVcpu {
         // SET_LAPIC must come before SET_MSRS, because the TSC deadline MSR
         // only restores successfully, when the LAPIC is correctly configured.
 
-        let sanitize_mask = MIN_XSAVE_MASK;
+        let snapshot_xcr0 = state
+            .xcrs
+            .xcrs
+            .iter()
+            .find(|xcr| xcr.xcr == 0)
+            .map(|xcr| xcr.value)
+            .unwrap_or(0);
+        let sanitize_mask = allowed_xsave_mask() & (snapshot_xcr0 | MIN_XSAVE_MASK);
         let mut cpuid = state.cpuid.clone();
         sanitize_cpuid_with_mask(&mut cpuid, sanitize_mask);
         self.fd
@@ -997,7 +1004,7 @@ fn sanitize_standard_xsave(xs: &mut kvm_xsave, xcrs: &mut kvm_xcrs, allowed: u64
 
 fn sanitize_compacted_xsave(xs: &mut Xsave, xcrs: &mut kvm_xcrs, allowed: u64) -> bool {
     strip_features(xcrs, allowed);
-    let raw_ptr = unsafe { xs.as_mut_fam_struct_ptr() };
+    let raw_ptr = xs.as_mut_fam_struct_ptr();
     let raw = unsafe { &mut *raw_ptr };
     let word_size = std::mem::size_of::<u32>();
     let Some(base_bytes) = raw.xsave.region.len().checked_mul(word_size) else {
@@ -1065,13 +1072,7 @@ fn sanitize_compacted_xsave(xs: &mut Xsave, xcrs: &mut kvm_xcrs, allowed: u64) -
 }
 
 fn sanitize_xsave(xsave: &mut Xsave, xcrs: &mut kvm_xcrs) -> bool {
-    let snapshot_xcr0 = xcrs
-        .xcrs
-        .iter()
-        .find(|xcr| xcr.xcr == 0)
-        .map(|xcr| xcr.value)
-        .unwrap_or(0);
-    let mask = allowed_xsave_mask() & (snapshot_xcr0 | MIN_XSAVE_MASK);
+    let mask = allowed_xsave_mask() & (MPX_MASK);
     sanitize_xsave_with_mask(xsave, xcrs, mask)
 }
 
