@@ -956,12 +956,19 @@ fn sanitize_compacted_xsave(xs: &mut Xsave, xcrs: &mut kvm_xcrs, allowed: u64) {
             .try_into()
             .unwrap(),
     );
+    let legacy_dump_len = 128.min(region.len());
+    let mut legacy_hex = String::new();
+    for byte in &region[..legacy_dump_len] {
+        use std::fmt::Write;
+        let _ = write!(legacy_hex, "{:02x}", byte);
+    }
     eprintln!(
-        "[sanitize_xsave_with_mask] xcr0_after={:?} xstate_bv={:#x} xcomp_bv={:#x} zeroed_bytes={}",
+        "[sanitize_xsave_with_mask] xcr0_after={:?} xstate_bv={:#x} xcomp_bv={:#x} zeroed_bytes={} legacy_prefix={}",
         after_xcr0,
         xstate_bv,
         xcomp_bv,
-        total_bytes.saturating_sub(LEGACY_SIZE + HEADER_SIZE)
+        total_bytes.saturating_sub(LEGACY_SIZE + HEADER_SIZE),
+        legacy_hex
     );
 }
 
