@@ -664,14 +664,7 @@ impl KvmVcpu {
         // SET_LAPIC must come before SET_MSRS, because the TSC deadline MSR
         // only restores successfully, when the LAPIC is correctly configured.
 
-        let snapshot_xcr0 = state
-            .xcrs
-            .xcrs
-            .iter()
-            .find(|xcr| xcr.xcr == 0)
-            .map(|xcr| xcr.value)
-            .unwrap_or(0);
-        let sanitize_mask = allowed_xsave_mask() & (snapshot_xcr0 | MIN_XSAVE_MASK);
+        let sanitize_mask = allowed_xsave_mask() & MPX_MASK;
         let mut cpuid = state.cpuid.clone();
         sanitize_cpuid_with_mask(&mut cpuid, sanitize_mask);
         self.fd
