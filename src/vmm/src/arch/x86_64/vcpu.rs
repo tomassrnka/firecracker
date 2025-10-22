@@ -695,10 +695,14 @@ impl KvmVcpu {
                     .map_err(KvmVcpuError::VcpuSetXsave)?;
                 eprintln!("[restore_state] used KVM_SET_XSAVE2");
             } else {
+                let legacy = &xsave.as_fam_struct_ref().xsave;
+                self.fd
+                    .set_xsave(legacy)
+                    .map_err(KvmVcpuError::VcpuSetXsave)?;
                 self.fd
                     .set_fpu(&state.default_fpu())
                     .map_err(KvmVcpuError::VcpuSetFpu)?;
-                eprintln!("[restore_state] restored minimal FPU state via KVM_SET_FPU");
+                eprintln!("[restore_state] used KVM_SET_XSAVE fallback + KVM_SET_FPU");
             }
         }
         self.fd
@@ -910,18 +914,11 @@ fn mask_header(region: &mut [u8], allowed: u64, compact_format: bool) {
     xstate |= required;
     region[XSTATE_BV_OFFSET..XSTATE_BV_OFFSET + 8].copy_from_slice(&xstate.to_le_bytes());
 
-    let mut xcomp = u64::from_le_bytes(
-        region[XCOMP_BV_OFFSET..XCOMP_BV_OFFSET + 8]
-            .try_into()
-            .unwrap(),
-    );
-    xcomp &= allowed;
-    xcomp |= required;
-    if compact_format {
-        xcomp |= XCOMP_BV_COMPACTED_FORMAT;
+    let mut xcomp = if compact_format {
+        (allowed | required) | XCOMP_BV_COMPACTED_FORMAT
     } else {
-        xcomp &= !XCOMP_BV_COMPACTED_FORMAT;
-    }
+        0
+    };
     region[XCOMP_BV_OFFSET..XCOMP_BV_OFFSET + 8].copy_from_slice(&xcomp.to_le_bytes());
 }
 
