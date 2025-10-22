@@ -661,8 +661,16 @@ impl KvmVcpu {
         // SET_LAPIC must come before SET_MSRS, because the TSC deadline MSR
         // only restores successfully, when the LAPIC is correctly configured.
 
+        let snapshot_xcr0 = state
+            .xcrs
+            .xcrs
+            .iter()
+            .find(|xcr| xcr.xcr == 0)
+            .map(|xcr| xcr.value)
+            .unwrap_or(0);
+        let sanitize_mask = allowed_xsave_mask() & (snapshot_xcr0 | MIN_XSAVE_MASK);
         let mut cpuid = state.cpuid.clone();
-        sanitize_cpuid(&mut cpuid);
+        sanitize_cpuid_with_mask(&mut cpuid, sanitize_mask);
         self.fd
             .set_cpuid2(&cpuid)
             .map_err(KvmVcpuError::VcpuSetCpuid)?;
@@ -677,7 +685,7 @@ impl KvmVcpu {
             .map_err(KvmVcpuError::VcpuSetSregs)?;
         let mut xsave = state.xsave.clone();
         let mut xcrs = state.xcrs;
-        sanitize_xsave(&mut xsave, &mut xcrs);
+        sanitize_xsave_with_mask(&mut xsave, &mut xcrs, sanitize_mask);
         // SAFETY: Safe unless the snapshot is corrupted.
         unsafe {
             self.fd
@@ -958,12 +966,18 @@ fn sanitize_compacted_xsave(xs: &mut Xsave, xcrs: &mut kvm_xcrs, allowed: u64) {
 }
 
 fn sanitize_xsave(xsave: &mut Xsave, xcrs: &mut kvm_xcrs) {
-    sanitize_xsave_with_mask(xsave, xcrs, allowed_xsave_mask());
+    let snapshot_xcr0 = xcrs
+        .xcrs
+        .iter()
+        .find(|xcr| xcr.xcr == 0)
+        .map(|xcr| xcr.value)
+        .unwrap_or(0);
+    let mask = allowed_xsave_mask() & (snapshot_xcr0 | MIN_XSAVE_MASK);
+    sanitize_xsave_with_mask(xsave, xcrs, mask);
 }
 
 fn sanitize_xsave_with_mask(xsave: &mut Xsave, xcrs: &mut kvm_xcrs, allowed: u64) {
-    let effective = allowed | MIN_XSAVE_MASK;
-    sanitize_compacted_xsave(xsave, xcrs, effective);
+    sanitize_compacted_xsave(xsave, xcrs, allowed);
 }
 
 fn sanitize_cpuid(cpuid: &mut CpuId) {
