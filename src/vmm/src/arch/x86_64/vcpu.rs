@@ -695,10 +695,7 @@ impl KvmVcpu {
                     .map_err(KvmVcpuError::VcpuSetXsave)?;
                 eprintln!("[restore_state] used KVM_SET_XSAVE2");
             } else {
-                self.fd
-                    .set_xsave(&xsave.as_fam_struct_ref().xsave)
-                    .map_err(KvmVcpuError::VcpuSetXsave)?;
-                eprintln!("[restore_state] used KVM_SET_XSAVE fallback");
+                eprintln!("[restore_state] skipping XSTATE ioctl (minimal mask)");
             }
         }
         self.fd
