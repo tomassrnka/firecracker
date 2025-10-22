@@ -911,10 +911,29 @@ fn sanitize_compacted_xsave(xs: &mut Xsave, xcrs: &mut kvm_xcrs, allowed: u64) {
     if total_bytes < LEGACY_SIZE + HEADER_SIZE {
         return;
     }
+    let before_xcr0 = xcrs
+        .xcrs
+        .iter()
+        .find(|xcr| xcr.xcr == 0)
+        .map(|xcr| xcr.value);
+    eprintln!(
+        "[sanitize_xsave_with_mask] allowed_mask={:#x} nr_xcrs={} base_bytes={} extra_bytes={} xcr0_before={:?}",
+        allowed, xcrs.nr_xcrs, base_bytes, extra_bytes, before_xcr0
+    );
     let region =
         unsafe { slice::from_raw_parts_mut(raw.xsave.region.as_mut_ptr() as *mut u8, total_bytes) };
     mask_header(region, allowed);
     region[(LEGACY_SIZE + HEADER_SIZE)..].fill(0);
+    let after_xcr0 = xcrs
+        .xcrs
+        .iter()
+        .find(|xcr| xcr.xcr == 0)
+        .map(|xcr| xcr.value);
+    eprintln!(
+        "[sanitize_xsave_with_mask] xcr0_after={:?} zeroed_bytes={}",
+        after_xcr0,
+        total_bytes.saturating_sub(LEGACY_SIZE + HEADER_SIZE)
+    );
 }
 
 fn sanitize_xsave(xsave: &mut Xsave, xcrs: &mut kvm_xcrs) {
@@ -934,6 +953,21 @@ fn sanitize_cpuid_with_mask(cpuid: &mut CpuId, allowed: u64) {
     let allowed_low = (allowed & u64::from(u32::MAX)) as u32;
     let allowed_high = (allowed >> 32) as u32;
     let mpx_allowed = (allowed & (XFEATURE_BNDREGS | XFEATURE_BNDCSR)) != 0;
+    let entries_len = cpuid.as_slice().len();
+    let before_mpx = cpuid
+        .as_slice()
+        .iter()
+        .find(|e| e.function == 0x7 && e.index == 0)
+        .map(|e| e.ebx);
+    let before_leafd0 = cpuid
+        .as_slice()
+        .iter()
+        .find(|e| e.function == 0xD && e.index == 0)
+        .map(|e| (e.eax, e.edx));
+    eprintln!(
+        "[sanitize_cpuid_with_mask] allowed_mask={:#x} entries={} mpx_allowed={} leaf7_ebx_before={:?} leafd0_before={:?}",
+        allowed, entries_len, mpx_allowed, before_mpx, before_leafd0
+    );
     for entry in cpuid.as_mut_slice() {
         match (entry.function, entry.index) {
             (0x7, 0) => {
@@ -959,6 +993,20 @@ fn sanitize_cpuid_with_mask(cpuid: &mut CpuId, allowed: u64) {
             _ => {}
         }
     }
+    let after_mpx = cpuid
+        .as_slice()
+        .iter()
+        .find(|e| e.function == 0x7 && e.index == 0)
+        .map(|e| e.ebx);
+    let after_leafd0 = cpuid
+        .as_slice()
+        .iter()
+        .find(|e| e.function == 0xD && e.index == 0)
+        .map(|e| (e.eax, e.edx));
+    eprintln!(
+        "[sanitize_cpuid_with_mask] leaf7_ebx_after={:?} leafd0_after={:?}",
+        after_mpx, after_leafd0
+    );
 }
 
 fn filter_mpx_msrs(msrs: &mut Msrs) {
