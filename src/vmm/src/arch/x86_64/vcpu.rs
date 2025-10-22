@@ -925,17 +925,18 @@ fn sanitize_standard_xsave(xs: &mut kvm_xsave, xcrs: &mut kvm_xcrs, allowed: u64
 
 fn sanitize_compacted_xsave(xs: &mut Xsave, xcrs: &mut kvm_xcrs, allowed: u64) {
     strip_features(xcrs, allowed);
-    let raw = unsafe { xs.as_mut_fam_struct() };
+    let raw_ptr = unsafe { xs.as_mut_fam_struct_ptr() };
+    let raw = unsafe { &mut *raw_ptr };
     let word_size = std::mem::size_of::<u32>();
     let Some(base_bytes) = raw.xsave.region.len().checked_mul(word_size) else {
         return;
     };
-    let Some(extra_bytes) = raw.len.checked_mul(word_size) else {
-        return;
-    };
-    let Some(total_bytes) = base_bytes.checked_add(extra_bytes) else {
-        return;
-    };
+    let sanitize_extra = allowed & !MIN_XSAVE_MASK != 0;
+    if !sanitize_extra {
+        raw.len = 0;
+    }
+    let extra_bytes = raw.len.saturating_mul(word_size);
+    let total_bytes = base_bytes + extra_bytes;
     if total_bytes < LEGACY_SIZE + HEADER_SIZE {
         return;
     }
