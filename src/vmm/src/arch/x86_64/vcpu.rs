@@ -693,10 +693,12 @@ impl KvmVcpu {
                 self.fd
                     .set_xsave2(&xsave)
                     .map_err(KvmVcpuError::VcpuSetXsave)?;
+                eprintln!("[restore_state] used KVM_SET_XSAVE2");
             } else {
                 self.fd
                     .set_xsave(&xsave.as_fam_struct_ref().xsave)
                     .map_err(KvmVcpuError::VcpuSetXsave)?;
+                eprintln!("[restore_state] used KVM_SET_XSAVE fallback");
             }
         }
         self.fd
@@ -886,7 +888,7 @@ fn strip_features(xcrs: &mut kvm_xcrs, allowed: u64) {
     }
 }
 
-fn mask_header(region: &mut [u8], allowed: u64) {
+fn mask_header(region: &mut [u8], allowed: u64, compact_format: bool) {
     let required = MIN_XSAVE_MASK & allowed;
     let mut xstate = u64::from_le_bytes(
         region[XSTATE_BV_OFFSET..XSTATE_BV_OFFSET + 8]
@@ -904,7 +906,11 @@ fn mask_header(region: &mut [u8], allowed: u64) {
     );
     xcomp &= allowed;
     xcomp |= required;
-    xcomp |= XCOMP_BV_COMPACTED_FORMAT;
+    if compact_format {
+        xcomp |= XCOMP_BV_COMPACTED_FORMAT;
+    } else {
+        xcomp &= !XCOMP_BV_COMPACTED_FORMAT;
+    }
     region[XCOMP_BV_OFFSET..XCOMP_BV_OFFSET + 8].copy_from_slice(&xcomp.to_le_bytes());
 }
 
@@ -967,7 +973,7 @@ fn sanitize_standard_xsave(xs: &mut kvm_xsave, xcrs: &mut kvm_xcrs, allowed: u64
     let region = unsafe {
         std::slice::from_raw_parts_mut(xs.region.as_mut_ptr() as *mut u8, LEGACY_SIZE + HEADER_SIZE)
     };
-    mask_header(region, allowed);
+    mask_header(region, allowed, false);
 }
 
 fn sanitize_compacted_xsave(xs: &mut Xsave, xcrs: &mut kvm_xcrs, allowed: u64) -> bool {
@@ -996,7 +1002,7 @@ fn sanitize_compacted_xsave(xs: &mut Xsave, xcrs: &mut kvm_xcrs, allowed: u64) -
     let region =
         unsafe { slice::from_raw_parts_mut(raw.xsave.region.as_mut_ptr() as *mut u8, total_bytes) };
     initialize_legacy_area(region);
-    mask_header(region, allowed);
+    mask_header(region, allowed, use_xsave2);
     region[(LEGACY_SIZE + HEADER_SIZE)..].fill(0);
     let after_xcr0 = xcrs
         .xcrs
