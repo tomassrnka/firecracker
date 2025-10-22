@@ -1011,9 +1011,9 @@ fn sanitize_compacted_xsave(xs: &mut Xsave, xcrs: &mut kvm_xcrs, allowed: u64) {
             .try_into()
             .unwrap(),
     );
-    let legacy_hex = hex_dump(&region[..LEGACY_PREFIX_LEN.min(region.len())]);
+    let legacy_hex = format_hex(&region[..LEGACY_PREFIX_LEN.min(region.len())]);
     let extra_hex = if total_bytes > LEGACY_SIZE + HEADER_SIZE {
-        hex_dump(
+        format_hex(
             &region[(LEGACY_SIZE + HEADER_SIZE)
                 ..(LEGACY_SIZE
                     + HEADER_SIZE
@@ -1022,7 +1022,7 @@ fn sanitize_compacted_xsave(xs: &mut Xsave, xcrs: &mut kvm_xcrs, allowed: u64) {
     } else {
         String::new()
     };
-    let full_hex = hex_dump(&region[..total_bytes.min(FULL_DUMP_LEN)]);
+    let full_hex = format_hex(&region[..total_bytes.min(FULL_DUMP_LEN)]);
     eprintln!(
         "[sanitize_xsave_with_mask] xcr0_after={:?} xstate_bv={:#x} xcomp_bv={:#x} zeroed_bytes={} legacy_prefix={} extra_prefix={} full_dump={}",
         after_xcr0,
