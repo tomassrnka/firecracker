@@ -862,20 +862,24 @@ fn detect_host_xsave_mask() -> u64 {
 
 fn strip_features(xcrs: &mut kvm_xcrs, allowed: u64) {
     let count = min(xcrs.nr_xcrs as usize, xcrs.xcrs.len());
+    let required = MIN_XSAVE_MASK & allowed;
     for xcr in xcrs.xcrs.iter_mut().take(count) {
         if xcr.xcr == 0 {
             xcr.value &= allowed;
+            xcr.value |= required;
         }
     }
 }
 
 fn mask_header(region: &mut [u8], allowed: u64) {
+    let required = MIN_XSAVE_MASK & allowed;
     let mut xstate = u64::from_le_bytes(
         region[XSTATE_BV_OFFSET..XSTATE_BV_OFFSET + 8]
             .try_into()
             .unwrap(),
     );
     xstate &= allowed;
+    xstate |= required;
     region[XSTATE_BV_OFFSET..XSTATE_BV_OFFSET + 8].copy_from_slice(&xstate.to_le_bytes());
 
     let mut xcomp = u64::from_le_bytes(
@@ -884,9 +888,11 @@ fn mask_header(region: &mut [u8], allowed: u64) {
             .unwrap(),
     );
     xcomp &= allowed;
+    xcomp |= required;
     region[XCOMP_BV_OFFSET..XCOMP_BV_OFFSET + 8].copy_from_slice(&xcomp.to_le_bytes());
 }
 
+#[allow(dead_code)]
 fn sanitize_standard_xsave(xs: &mut kvm_xsave, xcrs: &mut kvm_xcrs, allowed: u64) {
     strip_features(xcrs, allowed);
     let region = unsafe {
@@ -929,9 +935,21 @@ fn sanitize_compacted_xsave(xs: &mut Xsave, xcrs: &mut kvm_xcrs, allowed: u64) {
         .iter()
         .find(|xcr| xcr.xcr == 0)
         .map(|xcr| xcr.value);
+    let xstate_bv = u64::from_le_bytes(
+        region[XSTATE_BV_OFFSET..XSTATE_BV_OFFSET + 8]
+            .try_into()
+            .unwrap(),
+    );
+    let xcomp_bv = u64::from_le_bytes(
+        region[XCOMP_BV_OFFSET..XCOMP_BV_OFFSET + 8]
+            .try_into()
+            .unwrap(),
+    );
     eprintln!(
-        "[sanitize_xsave_with_mask] xcr0_after={:?} zeroed_bytes={}",
+        "[sanitize_xsave_with_mask] xcr0_after={:?} xstate_bv={:#x} xcomp_bv={:#x} zeroed_bytes={}",
         after_xcr0,
+        xstate_bv,
+        xcomp_bv,
         total_bytes.saturating_sub(LEGACY_SIZE + HEADER_SIZE)
     );
 }
@@ -941,7 +959,8 @@ fn sanitize_xsave(xsave: &mut Xsave, xcrs: &mut kvm_xcrs) {
 }
 
 fn sanitize_xsave_with_mask(xsave: &mut Xsave, xcrs: &mut kvm_xcrs, allowed: u64) {
-    sanitize_compacted_xsave(xsave, xcrs, allowed);
+    let effective = allowed | MIN_XSAVE_MASK;
+    sanitize_compacted_xsave(xsave, xcrs, effective);
 }
 
 fn sanitize_cpuid(cpuid: &mut CpuId) {
@@ -950,9 +969,10 @@ fn sanitize_cpuid(cpuid: &mut CpuId) {
 
 fn sanitize_cpuid_with_mask(cpuid: &mut CpuId, allowed: u64) {
     const MPX_CPUID_BIT: u32 = 1 << 14;
-    let allowed_low = (allowed & u64::from(u32::MAX)) as u32;
-    let allowed_high = (allowed >> 32) as u32;
-    let mpx_allowed = (allowed & (XFEATURE_BNDREGS | XFEATURE_BNDCSR)) != 0;
+    let effective = allowed | MIN_XSAVE_MASK;
+    let allowed_low = (effective & u64::from(u32::MAX)) as u32;
+    let allowed_high = (effective >> 32) as u32;
+    let mpx_allowed = (effective & (XFEATURE_BNDREGS | XFEATURE_BNDCSR)) != 0;
     let entries_len = cpuid.as_slice().len();
     let before_mpx = cpuid
         .as_slice()
