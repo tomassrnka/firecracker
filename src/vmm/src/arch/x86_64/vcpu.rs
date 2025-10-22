@@ -685,13 +685,19 @@ impl KvmVcpu {
             .map_err(KvmVcpuError::VcpuSetSregs)?;
         let mut xsave = state.xsave.clone();
         let mut xcrs = state.xcrs;
-        sanitize_xsave_with_mask(&mut xsave, &mut xcrs, sanitize_mask);
+        let used_xsave2 = sanitize_xsave_with_mask(&mut xsave, &mut xcrs, sanitize_mask);
         self.fd.set_xcrs(&xcrs).map_err(KvmVcpuError::VcpuSetXcrs)?;
         // SAFETY: Safe unless the snapshot is corrupted.
         unsafe {
-            self.fd
-                .set_xsave2(&xsave)
-                .map_err(KvmVcpuError::VcpuSetXsave)?;
+            if used_xsave2 {
+                self.fd
+                    .set_xsave2(&xsave)
+                    .map_err(KvmVcpuError::VcpuSetXsave)?;
+            } else {
+                self.fd
+                    .set_xsave(&xsave.as_fam_struct_ref().xsave)
+                    .map_err(KvmVcpuError::VcpuSetXsave)?;
+            }
         }
         self.fd
             .set_debug_regs(&state.debug_regs)
@@ -913,12 +919,12 @@ fn initialize_legacy_area(region: &mut [u8]) {
     legacy[28..32].copy_from_slice(&0xffff_u32.to_le_bytes());
 }
 
-fn sanitize_extra_region(raw: &mut kvm_bindings::kvm_xsave2, allowed: u64) {
+fn sanitize_extra_region(raw: &mut kvm_bindings::kvm_xsave2, allowed: u64) -> bool {
     if allowed & !MIN_XSAVE_MASK == 0 {
         let extra_slice = unsafe { raw.xsave.extra.as_mut_slice(raw.len) };
         extra_slice.fill(0);
         raw.len = 0;
-        return;
+        return false;
     }
 
     let highest_feature = 63_usize.saturating_sub(allowed.leading_zeros() as usize);
@@ -939,6 +945,7 @@ fn sanitize_extra_region(raw: &mut kvm_bindings::kvm_xsave2, allowed: u64) {
         }
         raw.len = required_dwords;
     }
+    raw.len > 0
 }
 
 fn format_hex(bytes: &[u8]) -> String {
@@ -963,24 +970,19 @@ fn sanitize_standard_xsave(xs: &mut kvm_xsave, xcrs: &mut kvm_xcrs, allowed: u64
     mask_header(region, allowed);
 }
 
-fn sanitize_compacted_xsave(xs: &mut Xsave, xcrs: &mut kvm_xcrs, allowed: u64) {
+fn sanitize_compacted_xsave(xs: &mut Xsave, xcrs: &mut kvm_xcrs, allowed: u64) -> bool {
     strip_features(xcrs, allowed);
     let raw_ptr = unsafe { xs.as_mut_fam_struct_ptr() };
     let raw = unsafe { &mut *raw_ptr };
     let word_size = std::mem::size_of::<u32>();
     let Some(base_bytes) = raw.xsave.region.len().checked_mul(word_size) else {
-        return;
+        return true;
     };
-    let sanitize_extra = allowed & !MIN_XSAVE_MASK != 0;
-    if !sanitize_extra {
-        let extra_slice = unsafe { raw.xsave.extra.as_mut_slice(raw.len) };
-        extra_slice.fill(0);
-        raw.len = 0;
-    }
+    let use_xsave2 = sanitize_extra_region(raw, allowed);
     let extra_bytes = raw.len.saturating_mul(word_size);
     let total_bytes = base_bytes + extra_bytes;
     if total_bytes < LEGACY_SIZE + HEADER_SIZE {
-        return;
+        return use_xsave2;
     }
     let before_xcr0 = xcrs
         .xcrs
@@ -1033,9 +1035,10 @@ fn sanitize_compacted_xsave(xs: &mut Xsave, xcrs: &mut kvm_xcrs, allowed: u64) {
         extra_hex,
         full_hex
     );
+    use_xsave2
 }
 
-fn sanitize_xsave(xsave: &mut Xsave, xcrs: &mut kvm_xcrs) {
+fn sanitize_xsave(xsave: &mut Xsave, xcrs: &mut kvm_xcrs) -> bool {
     let snapshot_xcr0 = xcrs
         .xcrs
         .iter()
@@ -1043,11 +1046,11 @@ fn sanitize_xsave(xsave: &mut Xsave, xcrs: &mut kvm_xcrs) {
         .map(|xcr| xcr.value)
         .unwrap_or(0);
     let mask = allowed_xsave_mask() & (snapshot_xcr0 | MIN_XSAVE_MASK);
-    sanitize_xsave_with_mask(xsave, xcrs, mask);
+    sanitize_xsave_with_mask(xsave, xcrs, mask)
 }
 
-fn sanitize_xsave_with_mask(xsave: &mut Xsave, xcrs: &mut kvm_xcrs, allowed: u64) {
-    sanitize_compacted_xsave(xsave, xcrs, allowed);
+fn sanitize_xsave_with_mask(xsave: &mut Xsave, xcrs: &mut kvm_xcrs, allowed: u64) -> bool {
+    sanitize_compacted_xsave(xsave, xcrs, allowed)
 }
 
 fn sanitize_cpuid(cpuid: &mut CpuId) {
@@ -1680,7 +1683,8 @@ mod tests {
 
         let mut xcrs = state.xcrs;
         let mut xsave = state.xsave.clone();
-        sanitize_xsave_with_mask(&mut xsave, &mut xcrs, MIN_XSAVE_MASK);
+        let used_xsave2 = sanitize_xsave_with_mask(&mut xsave, &mut xcrs, MIN_XSAVE_MASK);
+        assert!(!used_xsave2);
 
         assert_eq!(xcrs.xcrs[0].value & (XFEATURE_BNDREGS | XFEATURE_BNDCSR), 0);
 
