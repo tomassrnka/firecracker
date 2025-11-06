@@ -671,7 +671,14 @@ impl KvmVcpu {
             .find(|xcr| xcr.xcr == 0)
             .map(|xcr| xcr.value)
             .unwrap_or(0);
-        let sanitize_mask = allowed_xsave_mask() & (snapshot_xcr0 | MIN_XSAVE_MASK);
+        let host_mask = allowed_xsave_mask();
+        let snapshot_mask = (snapshot_xcr0 | MIN_XSAVE_MASK) & MPX_MASK;
+        let sanitize_mask = if host_mask == MIN_XSAVE_MASK {
+            // KVM only reported the minimal mask; fall back to the snapshot mask (minus MPX).
+            snapshot_mask
+        } else {
+            host_mask & snapshot_mask
+        };
         let mut cpuid = state.cpuid.clone();
         sanitize_cpuid_with_mask(&mut cpuid, sanitize_mask);
         self.fd
