@@ -679,6 +679,10 @@ impl KvmVcpu {
         } else {
             host_mask & snapshot_mask
         };
+        eprintln!(
+            "[restore_state] snapshot_xcr0={:#x} host_mask={:#x} sanitize_mask={:#x}",
+            snapshot_xcr0, host_mask, sanitize_mask
+        );
         let mut cpuid = state.cpuid.clone();
         sanitize_cpuid_with_mask(&mut cpuid, sanitize_mask);
         self.fd
