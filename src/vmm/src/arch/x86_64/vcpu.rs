@@ -664,8 +664,14 @@ impl KvmVcpu {
         // SET_LAPIC must come before SET_MSRS, because the TSC deadline MSR
         // only restores successfully, when the LAPIC is correctly configured.
 
-        // Always clamp the guest XSAVE feature mask to the minimal x87|SSE set.
-        let sanitize_mask = MIN_XSAVE_MASK;
+        let snapshot_xcr0 = state
+            .xcrs
+            .xcrs
+            .iter()
+            .find(|xcr| xcr.xcr == 0)
+            .map(|xcr| xcr.value)
+            .unwrap_or(0);
+        let sanitize_mask = allowed_xsave_mask() & (snapshot_xcr0 | MIN_XSAVE_MASK);
         let mut cpuid = state.cpuid.clone();
         sanitize_cpuid_with_mask(&mut cpuid, sanitize_mask);
         self.fd
@@ -683,16 +689,11 @@ impl KvmVcpu {
         let mut xsave = state.xsave.clone();
         let mut xcrs = state.xcrs;
         let used_xsave2 = sanitize_xsave_with_mask(&mut xsave, &mut xcrs, sanitize_mask);
-        // Force XCR0 (and the XSAVE header) to match the minimal mask we expose to KVM.
+        // Force XCR0 (and the XSAVE header) to match the sanitised mask we expose to KVM.
         for xcr in xcrs.xcrs.iter_mut().take(xcrs.nr_xcrs as usize) {
             if xcr.xcr == 0 {
-                xcr.value = MIN_XSAVE_MASK;
+                xcr.value = sanitize_mask;
             }
-        }
-        unsafe {
-            let raw = xsave.as_mut_fam_struct_ptr();
-            (*raw).xsave.region[XSTATE_BV_OFFSET / 4] = MIN_XSAVE_MASK as u32;
-            (*raw).xsave.region[XCOMP_BV_OFFSET / 4] = 0;
         }
         self.fd.set_xcrs(&xcrs).map_err(KvmVcpuError::VcpuSetXcrs)?;
         // SAFETY: Safe unless the snapshot is corrupted.
