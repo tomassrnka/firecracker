@@ -843,6 +843,7 @@ const IA32_BNDCFGS: u32 = 0x0000_0D90;
 const XFEATURE_BNDREGS: u64 = 1 << 3;
 const XFEATURE_BNDCSR: u64 = 1 << 4;
 const MPX_MASK: u64 = !(XFEATURE_BNDREGS | XFEATURE_BNDCSR);
+const IA32_TSC_ADJUST_MSR: u32 = 0x0000_003B;
 const LEGACY_SIZE: usize = 512;
 const HEADER_SIZE: usize = 64;
 const XSTATE_BV_OFFSET: usize = LEGACY_SIZE;
@@ -1162,8 +1163,15 @@ fn filter_mpx_msrs(msrs: &mut Msrs) {
     let entries = msrs.as_mut_slice();
     let mut write = 0usize;
     for read in 0..entries.len() {
-        if entries[read].index == IA32_BNDCFGS {
-            continue;
+        match entries[read].index {
+            IA32_BNDCFGS => continue,
+            IA32_TSC_ADJUST_MSR => {
+                entries[read].data = 0;
+                entries[read].reserved1 = 0;
+                entries[read].reserved2 = 0;
+                entries[read].reserved3 = 0;
+            }
+            _ => {}
         }
         if write != read {
             entries[write] = entries[read];
