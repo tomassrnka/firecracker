@@ -673,12 +673,7 @@ impl KvmVcpu {
             .unwrap_or(0);
         let host_mask = allowed_xsave_mask();
         let snapshot_mask = (snapshot_xcr0 | MIN_XSAVE_MASK) & MPX_MASK;
-        let mut sanitize_mask =
-            host_mask & snapshot_mask;
-        // allow fallback to host mask only if snapshot had no AVX bits
-        if sanitize_mask == MIN_XSAVE_MASK && (snapshot_mask == MIN_XSAVE_MASK) {
-            sanitize_mask = host_mask;
-        }
+        let sanitize_mask = host_mask & snapshot_mask;
         eprintln!(
             "[restore_state] snapshot_xcr0={:#x} host_mask={:#x} sanitize_mask={:#x}",
             snapshot_xcr0, host_mask, sanitize_mask
