@@ -708,7 +708,14 @@ impl KvmVcpu {
                 self.fd
                     .set_xsave2(&xsave)
                     .map_err(KvmVcpuError::VcpuSetXsave)?;
-                eprintln!("[restore_state] used KVM_SET_XSAVE2");
+                // Even when XSAVE2 succeeds, force the legacy FPU state to a
+                // known-good baseline. This avoids situations where the saved
+                // legacy area is incompatible with the host kernel and it
+                // issues "Bad FPU state" warnings.
+                self.fd
+                    .set_fpu(&state.default_fpu())
+                    .map_err(KvmVcpuError::VcpuSetFpu)?;
+                eprintln!("[restore_state] used KVM_SET_XSAVE2 + KVM_SET_FPU");
             } else {
                 let legacy = &xsave.as_fam_struct_ref().xsave;
                 self.fd
