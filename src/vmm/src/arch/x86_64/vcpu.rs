@@ -737,6 +737,19 @@ impl KvmVcpu {
                 return Err(KvmVcpuError::VcpuSetMsrsIncomplete);
             }
         }
+
+        // Ensure IA32_TSC_ADJUST is zeroed regardless of snapshot contents.
+        let mut tsc_adjust_msrs = Msrs::new(1).map_err(KvmVcpuError::Fam)?;
+        let entry = kvm_msr_entry {
+            index: IA32_TSC_ADJUST_MSR,
+            data: 0,
+            ..Default::default()
+        };
+        tsc_adjust_msrs.push(entry).map_err(KvmVcpuError::Fam)?;
+        let _ = self
+            .fd
+            .set_msrs(&tsc_adjust_msrs)
+            .map_err(KvmVcpuError::VcpuSetMsrs)?;
         self.fd
             .set_vcpu_events(&state.vcpu_events)
             .map_err(KvmVcpuError::VcpuSetVcpuEvents)?;
@@ -1167,9 +1180,6 @@ fn filter_mpx_msrs(msrs: &mut Msrs) {
             IA32_BNDCFGS => continue,
             IA32_TSC_ADJUST_MSR => {
                 entries[read].data = 0;
-                entries[read].reserved1 = 0;
-                entries[read].reserved2 = 0;
-                entries[read].reserved3 = 0;
             }
             _ => {}
         }
